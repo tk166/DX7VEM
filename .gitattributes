@@ -1,0 +1,11 @@
+# 不做任何换行转换：.rpp 是按字节编辑的（VST chunk / 偏移敏感），
+# msfa 也是第三方源码原样保存。统一按“原样”存储。
+* -text
+
+# 二进制（禁止 diff，避免 git 当文本处理）
+*.bin   binary
+*.wasm  binary
+*.wav   binary
+*.mid   binary
+*.syx   binary
+*.png   binary

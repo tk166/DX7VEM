@@ -1,0 +1,24 @@
+[package]
+name = "synth"
+version = "1.0.0"
+edition = "2021"
+
+# ---------------------------------------------------------------------------
+# 本地对拍用（不属于上游）：只新增两个 [[bin]]，不改上游模块逻辑。
+#   ref-instrument : 直接驱动单个 Instrument（M1 谱合成核心的唯一真值）
+#   ref-render     : 走完整 Director（包络/弓噪/琴体，M2+ 的真值）
+# ---------------------------------------------------------------------------
+
+[[bin]]
+name = "ref-instrument"
+path = "src/bin/ref_instrument.rs"
+
+[[bin]]
+name = "ref-render"
+path = "src/bin/ref_render.rs"
+
+[dependencies]
+getrandom = "0.2.15"
+claxon = "0.4.3"
+rustfft = "6.4.1"
+realfft = "3.5.0"

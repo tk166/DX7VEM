@@ -1,0 +1,22 @@
+[package]
+name = "vem"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "VEM spectral string engine (independent implementation; see docs/开发计划-VEM弦乐引擎.md)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "render"
+path = "src/bin/render.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

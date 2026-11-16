@@ -1,0 +1,7 @@
+/node_modules/
+/out/
+/vem/target/
+/vem/reference/
+# 参考实现的构建产物不随仓库走
+**/target/
+*.pdb
