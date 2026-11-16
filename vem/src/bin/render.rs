@@ -2,13 +2,23 @@
 //!
 //! 用法：
 //!   cargo run --release --bin render -- --instrument violin --note 69 --dur 3 --out out/vem-69.wav
-//!   可选：--tail 1.0 --sr 48000 --vel 0.8 --art arco --bow 0.5 --vibrato 0.4 --pcm16 --seed 12345
+//!
+//! 对拍（与 ref-instrument 直接比较，需关掉总线缩放）：
+//!   ... --raw --seed 12345
+//!
+//! 可选参数：
+//!   --tail 1.0 --sr 48000 --vel 0.8 --art arco --bow 0.5 --vibrato 0.4 --seed 12345
+//!   --raw（output_gain=1，跳过软限幅） --pcm16
+//!   --attack-ms 20.83 --attack-vel-ms 625 --release-ms 20.83 --release-slow-ms 208.33
+//!   --bow-settle-ms 208.33 --vib-onset-ms 0 --vib-onset-ramp-ms 60 --release-rate 0.5
+//!   --oversample auto|on|off --harmonics --volume 1 --bend 0
+//!   --damping 1 --tilt 0 --bow-focus 1 --cutoff 1 --phase 1
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use vem::{Articulation, Engine, InstrumentType};
+use vem::{Articulation, Engine, InstrumentType, TimbreParams};
 
 struct Args {
     map: Vec<(String, String)>,
@@ -62,17 +72,7 @@ impl Args {
     }
 }
 
-fn write_wav_f32(path: &str, sample_rate: u32, left: &[f32], right: &[f32]) -> std::io::Result<()> {
-    write_wav(path, sample_rate, left, right, 32)
-}
-
-fn write_wav(
-    path: &str,
-    sample_rate: u32,
-    left: &[f32],
-    right: &[f32],
-    bits: u16,
-) -> std::io::Result<()> {
+fn write_wav(path: &str, sample_rate: u32, left: &[f32], right: &[f32], bits: u16) -> std::io::Result<()> {
     if let Some(dir) = Path::new(path).parent() {
         if !dir.as_os_str().is_empty() {
             std::fs::create_dir_all(dir)?;
@@ -119,17 +119,16 @@ fn write_wav(
 fn main() {
     let args = Args::parse();
     if args.flag("help") {
-        eprintln!(
-            "用法: render --instrument violin --note 69 --dur 3 [--tail 1] [--sr 48000]\n\
-             \x20     [--vel 0.8] [--art arco] [--bow 0.5] [--vibrato 0.4] [--pcm16]\n\
-             \x20     [--seed 12345] --out out/vem-69.wav"
-        );
+        eprintln!("见本文件顶部注释：render --instrument violin --note 69 --dur 3 --out out/vem-69.wav [--raw]");
         return;
     }
 
     let instrument = InstrumentType::parse(&args.string("instrument", "violin"))
         .unwrap_or_else(|| panic!("未知乐器: {}", args.string("instrument", "")));
     let note = args.i32("note", 69);
+    let note2 = args.i32("note2", note);
+    let has_note2 = args.raw("note2").is_some();
+    let note2_at = args.f32("note2-at", 1.5).max(0.0);
     let dur = args.f32("dur", 3.0).max(0.0);
     let tail = args.f32("tail", 1.0).max(0.0);
     let sample_rate = args.i32("sr", 48000).max(8000) as f32;
@@ -142,11 +141,59 @@ fn main() {
     let pcm16 = args.flag("pcm16");
 
     let mut engine = Engine::new(sample_rate, instrument);
-    engine.rng.reset(seed);
-    engine.set_gain(1.0);
+    engine.seed = seed;
+    engine.reset();
+    engine.polyphonic = args.flag("poly");
+    engine.set_gain(args.f32("gain", 1.0));
+    engine.master = args.f32("master", 1.0);
+    engine.volume = args.f32("volume", 1.0).clamp(0.0, 1.0);
     engine.vibrato_depth = vibrato;
     engine.bow_position = bow;
+    engine.bow_pressure = args.f32("bow-pressure", 1.0).clamp(0.0, 1.0);
+    engine.release_rate = args.f32("release-rate", 0.5).clamp(0.0, 1.0);
     engine.articulation = art;
+    engine.bend = (2.0f32).powf(args.f32("bend", 0.0) / 12.0);
+    engine.harmonics = args.flag("harmonics");
+
+    // 包络：只有显式给了参数才覆盖（避免 ms↔sample 往返带来 1 采样误差）
+    if args.raw("attack-ms").is_some() || args.raw("attack-vel-ms").is_some() {
+        engine.envelope.set_attack_ms(
+            args.f32("attack-ms", engine.envelope.attack_ms()),
+            args.f32("attack-vel-ms", engine.envelope.attack_velocity_ms()),
+        );
+    }
+    if args.raw("release-ms").is_some() || args.raw("release-slow-ms").is_some() {
+        engine.envelope.set_release_ms(
+            args.f32("release-ms", engine.envelope.release_ms()),
+            args.f32("release-slow-ms", engine.envelope.release_slow_ms()),
+        );
+    }
+    if args.raw("bow-settle-ms").is_some() {
+        engine.envelope.set_bow_settle_ms(args.f32("bow-settle-ms", engine.envelope.bow_settle_ms()));
+    }
+    engine.envelope.vibrato_onset_ms = args.f32("vib-onset-ms", 0.0).max(0.0);
+    engine.envelope.vibrato_onset_ramp_ms = args.f32("vib-onset-ramp-ms", 60.0).max(0.0);
+
+    let mut timbre = TimbreParams::default();
+    timbre.damping_scale = args.f32("damping", 1.0);
+    timbre.tilt = args.f32("tilt", 0.0);
+    timbre.bow_focus = args.f32("bow-focus", 1.0);
+    timbre.cutoff_scale = args.f32("cutoff", 1.0);
+    timbre.phase_scale = args.f32("phase", 1.0);
+    engine.timbre = timbre;
+
+    let raw = args.flag("raw");
+    if raw {
+        engine.output_gain = 1.0;
+        engine.safe_clip = false;
+    }
+
+    let ov = args.string("oversample", "auto");
+    engine.set_oversample(match ov.as_str() {
+        "on" => 1,
+        "off" => 2,
+        _ => 0,
+    });
 
     let total = ((dur + tail) * sample_rate).round() as usize;
     let note_off_at = (dur * sample_rate).round() as usize;
@@ -154,25 +201,36 @@ fn main() {
     let mut right = vec![0.0f32; total];
 
     engine.note_on(note, velocity);
+    let mut current_note = note;
+    let mut sent_note2 = false;
+    let note2_at_frame = (note2_at * sample_rate).round() as usize;
 
-    // 分块渲染，在 dur 处松键（块长 1024，音符边界误差 < 21 ms 在该块内是逐采样精确的）
+    // 分块渲染，换音/松键点精确到采样
     let chunk = 1024;
     let mut pos = 0;
     let mut released = false;
     while pos < total {
+        if has_note2 && !sent_note2 && pos >= note2_at_frame {
+            engine.note_on(note2, velocity);
+            current_note = note2;
+            sent_note2 = true;
+        }
         if !released && pos >= note_off_at {
-            engine.note_off(note);
+            engine.note_off(current_note);
             released = true;
         }
         let mut end = (pos + chunk).min(total);
         if !released && note_off_at < end {
             end = note_off_at;
         }
+        if has_note2 && !sent_note2 && note2_at_frame < end {
+            end = note2_at_frame;
+        }
         engine.render(&mut left[pos..end], &mut right[pos..end]);
         pos = end;
     }
     if !released {
-        engine.note_off(note);
+        engine.note_off(current_note);
     }
 
     let peak = left
@@ -188,13 +246,13 @@ fn main() {
         (sum / (2 * total).max(1) as f64).sqrt()
     };
 
-    if let Err(e) = write_wav_f32(&out, sample_rate as u32, &left, &right) {
+    if let Err(e) = write_wav(&out, sample_rate as u32, &left, &right, 32) {
         eprintln!("写出失败 {}: {e}", out);
         std::process::exit(1);
     }
 
     println!(
-        "{} {} note={} dur={:.2}s tail={:.2}s sr={} vel={:.2} art={} bow={:.2} vib={:.2} seed={}",
+        "{} {} note={} dur={:.2}s tail={:.2}s sr={} vel={:.2} art={} bow={:.2} vib={:.2} seed={} oversample={} raw={}",
         instrument.name(),
         out,
         note,
@@ -205,14 +263,19 @@ fn main() {
         art.name(),
         bow,
         vibrato,
-        seed
+        seed,
+        if engine.oversample { "on" } else { "off" },
+        raw
     );
     println!(
-        "  frames={} peak={:.4} rms={:.5} ({:.2} dBFS)",
+        "  frames={} peak={:.4} rms={:.5} ({:.2} dBFS)  control={} samples  attack={}  release={}",
         total,
         peak,
         rms,
-        20.0 * (rms.max(1e-12) as f32).log10()
+        20.0 * (rms.max(1e-12) as f32).log10(),
+        engine.control_samples(),
+        engine.envelope.attack_samples(velocity, sample_rate),
+        engine.envelope.release_samples(engine.release_rate, sample_rate)
     );
 
     if pcm16 {

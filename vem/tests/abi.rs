@@ -7,7 +7,7 @@ use vem::*;
 fn abi_lifecycle_render_and_alloc() {
     let e: *mut c_void = vem_new(48000, 0);
     assert!(!e.is_null());
-    assert_eq!(vem_version() / 100, 1);
+    assert_eq!(vem_version() / 100, 2);
 
     vem_set_gain(e, 1.0);
     vem_set_master(e, 1.0);
@@ -26,7 +26,7 @@ fn abi_lifecycle_render_and_alloc() {
     assert!(!pl.is_null() && !pr.is_null());
 
     vem_note_on(e, 69, 0.8);
-    for _ in 0..4 {
+    for _ in 0..40 {
         vem_render(e, pl as *mut f32, pr as *mut f32, 64);
     }
     let l = unsafe { core::slice::from_raw_parts(pl as *const f32, 64) };

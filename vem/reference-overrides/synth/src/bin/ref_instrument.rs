@@ -7,6 +7,7 @@
 // 用法:
 //   ref-instrument --instrument violin --note 69 --dur 3 --tail 1 --out out/ref-69.wav
 // 可选: --vel 0.8 --bow 0.5 --vibrato 0.4 --release 0.5 --seed 12345
+//       --note2 71 --note2-at 1.5   （legato 换音：复用同一 Instrument，旧谱转衰减尾巴）
 
 mod common;
 
@@ -39,25 +40,39 @@ fn parse_articulation(s: &str) -> Articulation {
     }
 }
 
-/// Director::update_transitions 的形状：raised-cosine 插值。
-fn weight(step: i64, start: i64, end: i64) -> f32 {
-    let j = step;
-    if j >= start {
-        if j < end {
-            let fraction = (j - start) as f32 / (end - start) as f32;
-            0.5 - 0.5 * (fraction * PI).cos()
-        } else {
-            1.0
+#[derive(Copy, Clone)]
+struct Trans {
+    start: i64,
+    end: i64,
+    from: f32,
+    to: f32,
+}
+
+impl Trans {
+    fn value(&self, step: i64) -> f32 {
+        if step <= self.start {
+            return self.from;
         }
-    } else {
-        0.0
+        if step >= self.end {
+            return self.to;
+        }
+        let fraction = (step - self.start) as f32 / (self.end - self.start) as f32;
+        let w2 = 0.5 - 0.5 * (fraction * PI).cos();
+        (1.0 - w2) * self.from + w2 * self.to
     }
+}
+
+fn note_freq(note: i32) -> f32 {
+    440.0 * 2.0f32.powf((note - 69) as f32 / 12.0)
 }
 
 fn main() {
     let args = Args::parse();
     let itype = parse_instrument(&args.string("instrument", "violin"));
     let note = args.i32("note", 69);
+    let note2 = args.i32("note2", note);
+    let has_note2 = args.raw("note2").is_some();
+    let note2_at = args.f32("note2-at", 1.5).max(0.0);
     let dur = args.f32("dur", 3.0).max(0.0);
     let tail = args.f32("tail", 1.0).max(0.0);
     let vel = args.f32("vel", 0.8).clamp(0.0, 1.0);
@@ -76,18 +91,16 @@ fn main() {
 
     let frames = ((dur + tail) * sr) as usize;
     let note_off_step = (dur * sr) as i64;
+    let note2_step = (note2_at * sr) as i64;
 
-    // Director 的 Arco 参数
     let attack_time = 1000 + (30000.0 * (1.0 - vel)) as i64;
     let bow_transition = 10000i64;
     let release_time = 1000 + (10000.0 * (1.0 - release_rate)) as i64;
 
-    let freq = 440.0 * 2.0f32.powf((note - 69) as f32 / 12.0);
-
     let mut inst = Instrument::new(itype, 0);
-    inst.set_frequency(freq);
+    inst.set_frequency(note_freq(note));
     inst.set_volume(0.0);
-    inst.set_bow_position(0.0); // bow + shift(-bow) = 0
+    inst.set_bow_position(0.0);
     inst.set_vibrato_amplitude(0.0);
     inst.note_on(note, art);
 
@@ -96,28 +109,46 @@ fn main() {
 
     let mut step: i64 = 0;
     let mut envelope = 0.0f32;
-    let mut release: Option<(i64, f32)> = None;
+    let mut current_note = note;
+    let mut env_trans = Trans { start: 0, end: attack_time, from: 0.0, to: 1.0 };
+    let mut bow_trans = Trans { start: 0, end: bow_transition, from: -bow, to: 0.0 };
+    let mut released = false;
+    let mut sent_note2 = false;
 
     for _ in 0..frames {
-        // Director: if step%100 == 0 { process_messages() } —— 松键消息只在这个边界生效
-        if step % 100 == 0 && release.is_none() && step >= note_off_step {
-            release = Some((step, envelope));
+        // Director: if step%100 == 0 { process_messages() }
+        if step % 100 == 0 {
+            // legato 换音（不松前一个音）
+            if has_note2 && !sent_note2 && step >= note2_step {
+                let from = 0.5 * envelope;
+                inst.set_frequency(note_freq(note2));
+                inst.note_on(note2, art);
+                env_trans = Trans { start: step, end: step + attack_time, from, to: 1.0 };
+                current_note = note2;
+                sent_note2 = true;
+                // update_transitions 立即执行一次
+                envelope = env_trans.value(step);
+                inst.set_volume(envelope);
+                inst.set_vibrato_amplitude(0.01 * vibrato * envelope);
+            }
+            if !released && step >= note_off_step {
+                env_trans = Trans { start: step, end: step + release_time, from: envelope, to: 0.0 };
+                released = true;
+                envelope = env_trans.value(step);
+                inst.set_volume(envelope);
+                inst.set_vibrato_amplitude(0.01 * vibrato * envelope);
+            }
         }
+        let _ = current_note;
 
         // Director: step += 1; 然后 Division: if step%100 == 0 { update_transitions() }
         step += 1;
         if step % 100 == 0 {
-            if let Some((rstart, from)) = release {
-                let w = weight(step, rstart, rstart + release_time);
-                envelope = from * (1.0 - w);
-            } else {
-                envelope = weight(step, 0, attack_time);
-            }
-            let bow_shift = -bow * (1.0 - weight(step, 0, bow_transition));
+            envelope = env_trans.value(step);
+            let bow_shift = bow_trans.value(step);
             inst.set_volume(envelope);
             inst.set_bow_position((bow + bow_shift).max(0.0));
             inst.set_vibrato_amplitude(0.01 * vibrato * envelope);
-            inst.set_frequency(freq);
         }
 
         mono.push(inst.generate(&mut planner));
@@ -129,25 +160,26 @@ fn main() {
     }
     let (peak, rms) = peak_rms(&mono, &mono);
     println!(
-        "ref-instrument {} note={} dur={:.2}s tail={:.2}s sr={} vel={:.2} art={} bow={:.2} vib={:.2} (attack {} samples, release {} samples)",
+        "ref-instrument {} note={} note2={}{} dur={:.2}s tail={:.2}s sr={} vel={:.2} art=arco bow={:.2} vib={:.2}",
         itype_name(itype),
         note,
+        note2,
+        if has_note2 { format!("@{:.2}s", note2_at) } else { "".to_string() },
         dur,
         tail,
         SAMPLE_RATE,
         vel,
-        "arco",
         bow,
-        vibrato,
-        attack_time,
-        release_time
+        vibrato
     );
     println!(
-        "  frames={} peak={:.4} rms={:.5} ({:.2} dBFS)",
+        "  frames={} peak={:.4} rms={:.5} ({:.2} dBFS)  attack={} release={}",
         frames,
         peak,
         rms,
-        20.0 * rms.max(1e-12).log10()
+        20.0 * rms.max(1e-12).log10(),
+        attack_time,
+        release_time
     );
 }
 

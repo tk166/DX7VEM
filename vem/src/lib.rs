@@ -10,16 +10,21 @@
 //! - `panic=abort`，不引入 `getrandom`/`std::time`/`std::fs`，保证 standalone（imports 为空）；
 //! - 缓冲由 JS 侧调用 `vem_alloc` 分配一次，指针复用。
 
-#![deny(clippy::float_cmp)]
-
 pub mod articulations;
 pub mod engine;
+pub mod envelope;
+pub mod fft;
+pub mod filter;
 pub mod instrument;
 pub mod random;
 pub mod smooth;
+pub mod spectrum;
 
 pub use articulations::Articulation;
-pub use engine::{Engine, InstrumentType, BLOCK, MAX_VOICES};
+pub use engine::{Engine, BLOCK, DEFAULT_SEED, DIRECTOR_SCALE, MAX_VOICES};
+pub use envelope::EnvelopeParams;
+pub use instrument::InstrumentType;
+pub use spectrum::TimbreParams;
 
 use core::ffi::c_void;
 
@@ -57,12 +62,12 @@ pub extern "C" fn vem_reset(p: *mut c_void) {
 /// 版本号：major*10000 + minor*100 + patch。
 #[no_mangle]
 pub extern "C" fn vem_version() -> i32 {
-    0 * 10000 + 1 * 100 + 0
+    0 * 10000 + 2 * 100 + 0
 }
 
 // ---------------------------------------------------------------- 参数
 
-/// 音色/数据 blob（M3 起用于系数与 IR；M0 为空操作，保持 ABI 稳定）。
+/// 音色/数据 blob（M3 起用于系数与 IR；当前为空操作，保持 ABI 稳定）。
 #[no_mangle]
 pub extern "C" fn vem_set_patch(_p: *mut c_void, _blob: *const u8, _len: usize) {}
 
@@ -71,7 +76,9 @@ pub extern "C" fn vem_set_seed(p: *mut c_void, seed: u32) {
     if p.is_null() {
         return;
     }
-    engine_mut(p).rng.reset(seed);
+    let e = engine_mut(p);
+    e.seed = seed;
+    e.reset();
 }
 
 #[no_mangle]
@@ -91,6 +98,22 @@ pub extern "C" fn vem_set_master(p: *mut c_void, gain: f32) {
 }
 
 #[no_mangle]
+pub extern "C" fn vem_set_volume(p: *mut c_void, volume: f32) {
+    if p.is_null() {
+        return;
+    }
+    engine_mut(p).volume = volume.clamp(0.0, 1.0);
+}
+
+#[no_mangle]
+pub extern "C" fn vem_set_pitch_bend(p: *mut c_void, semitones: f32) {
+    if p.is_null() {
+        return;
+    }
+    engine_mut(p).bend = (2.0f32).powf(semitones / 12.0);
+}
+
+#[no_mangle]
 pub extern "C" fn vem_set_vibrato(p: *mut c_void, depth: f32, rate: f32) {
     if p.is_null() {
         return;
@@ -98,6 +121,40 @@ pub extern "C" fn vem_set_vibrato(p: *mut c_void, depth: f32, rate: f32) {
     let e = engine_mut(p);
     e.vibrato_depth = depth.max(0.0);
     e.vibrato_rate = rate.max(0.0);
+}
+
+/// 包络全参数（毫秒）：
+/// attack_ms 基础起音 / attack_velocity_ms 力度 0 时额外量 /
+/// release_ms 基础释放 / release_slow_ms release_rate=0 时额外量 /
+/// bow_settle_ms 起音弓位归位时间 / vibrato_onset_ms 揉弦渐入延迟 / vibrato_onset_ramp_ms 渐入过渡
+#[no_mangle]
+pub extern "C" fn vem_set_envelope(
+    p: *mut c_void,
+    attack_ms: f32,
+    attack_velocity_ms: f32,
+    release_ms: f32,
+    release_slow_ms: f32,
+    bow_settle_ms: f32,
+    vibrato_onset_ms: f32,
+    vibrato_onset_ramp_ms: f32,
+) {
+    if p.is_null() {
+        return;
+    }
+    let e = engine_mut(p);
+    e.envelope.set_attack_ms(attack_ms, attack_velocity_ms);
+    e.envelope.set_release_ms(release_ms, release_slow_ms);
+    e.envelope.set_bow_settle_ms(bow_settle_ms);
+    e.envelope.vibrato_onset_ms = vibrato_onset_ms.max(0.0);
+    e.envelope.vibrato_onset_ramp_ms = vibrato_onset_ramp_ms.max(0.0);
+}
+
+#[no_mangle]
+pub extern "C" fn vem_set_release_rate(p: *mut c_void, rate: f32) {
+    if p.is_null() {
+        return;
+    }
+    engine_mut(p).release_rate = rate.clamp(0.0, 1.0);
 }
 
 #[no_mangle]
@@ -111,11 +168,60 @@ pub extern "C" fn vem_set_bow(p: *mut c_void, position: f32, pressure: f32) {
 }
 
 #[no_mangle]
+pub extern "C" fn vem_set_polyphonic(p: *mut c_void, on: i32) {
+    if p.is_null() {
+        return;
+    }
+    engine_mut(p).polyphonic = on != 0;
+}
+
+#[no_mangle]
 pub extern "C" fn vem_set_articulation(p: *mut c_void, art: i32) {
     if p.is_null() {
         return;
     }
     engine_mut(p).articulation = Articulation::from_i32(art);
+}
+
+#[no_mangle]
+pub extern "C" fn vem_set_harmonics(p: *mut c_void, on: i32) {
+    if p.is_null() {
+        return;
+    }
+    let e = engine_mut(p);
+    e.harmonics = on != 0;
+}
+
+/// 过采样：0=自动（小提琴 2×）1=强制开 2=强制关
+#[no_mangle]
+pub extern "C" fn vem_set_oversample(p: *mut c_void, mode: i32) {
+    if p.is_null() {
+        return;
+    }
+    engine_mut(p).set_oversample(mode);
+}
+
+/// 音色微调（默认全部中性 = 参考实现）：阻尼倍率 / 谐波倾斜 / 弓位强度 / 截止倍率 / 相位倍率
+#[no_mangle]
+pub extern "C" fn vem_set_timbre(
+    p: *mut c_void,
+    damping_scale: f32,
+    tilt: f32,
+    bow_focus: f32,
+    cutoff_scale: f32,
+    phase_scale: f32,
+) {
+    if p.is_null() {
+        return;
+    }
+    let e = engine_mut(p);
+    e.timbre = TimbreParams {
+        damping_scale: damping_scale.clamp(0.1, 4.0),
+        tilt,
+        bow_focus: bow_focus.max(0.0),
+        cutoff_scale: cutoff_scale.clamp(0.1, 4.0),
+        phase_scale,
+    };
 }
 
 #[no_mangle]

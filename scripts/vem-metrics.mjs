@@ -294,6 +294,18 @@ for (let i = 0; i < Math.min(envRef.length, envOur.length); i++) {
   }
 }
 
+// 逐采样差（同种子同参数时应当极小）
+let diffPeak = 0;
+let diffSum = 0;
+const nDiff = Math.min(refMono.length, ourMono.length);
+for (let i = 0; i < nDiff; i++) {
+  const d = ourMono[i] - refMono[i];
+  if (Math.abs(d) > diffPeak) diffPeak = Math.abs(d);
+  diffSum += d * d;
+}
+const diffRms = Math.sqrt(diffSum / Math.max(1, nDiff));
+const snrDb = diffRms > 0 ? db(rmsRef / diffRms) : Infinity;
+
 const lines = [];
 lines.push(`窗口: ${from.toFixed(2)}s → ${(from + dur).toFixed(2)}s（${dur.toFixed(2)}s，${sr} Hz）`);
 lines.push(`长度: ref ${(REF.frames / REF.sampleRate).toFixed(3)}s | ours ${(OUR.frames / OUR.sampleRate).toFixed(3)}s`);
@@ -308,6 +320,9 @@ lines.push(
 lines.push(`频谱余弦(线性)   : ${cosLin.toFixed(4)}`);
 lines.push(`频谱余弦(1/3 oct): ${cosThird.toFixed(4)}`);
 lines.push(`包络相关(20 ms)  : ${envCorr.toFixed(4)} | 逐帧最大差 ${envMaxDiff.toFixed(1)} dB`);
+lines.push(
+  `逐采样差         : 峰值 ${diffPeak.toExponential(2)} | RMS ${diffRms.toExponential(2)} | SNR ${Number.isFinite(snrDb) ? snrDb.toFixed(1) + " dB" : "∞"}`
+);
 
 const fails = [];
 if (Math.abs(centErr ?? 999) > 1) fails.push(`基频误差 ${centErr?.toFixed(2)} cent > 1`);
