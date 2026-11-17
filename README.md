@@ -13,7 +13,8 @@
 |---|---|
 | `vem/` | 新引擎（Rust，独立构建；wasm 产物入库） |
 | `vem/reference/` | 上游 VEM 固定 commit 副本（**gitignore**，只做开发期对照，不参与交付） |
-| `scripts/` | 对拍/验收工具（从 DX7 仓库复用 + 新增 `vem-metrics.mjs`） |
+| `web/` | 播放器 baseline：DX7 `msfa.wasm` + worklet + `data/`（M5 接 VEM） |
+| `scripts/` | 对拍/验收工具（DX7 仓库复用 + `vem-metrics` / `render-mix` / `m4-check`） |
 | `docs/` | 计划与本项目踩坑记录 |
 | `out/` | 渲染产物（gitignore） |
 
@@ -38,6 +39,6 @@ node scripts/vem-metrics.mjs out/ref-69.wav out/vem-69.wav --from 0.5 --to 3.5 -
 | M1 单音还原（谱合成 + 自写 IFFT） | ✅ |
 | M2 演奏性（7 种弓法/弓位/揉弦） | ✅ |
 | M3 琴体 IR + 总线 FX | ✅ |
-| M4 接数据、CH3 单轨替换 | ⬜ |
+| M4 接数据、CH3 单轨替换 | ✅ |
 | M5 Web/AudioWorklet 集成 | ⬜ |
 | M6 收尾（体积/CPU/许可） | ⬜ |

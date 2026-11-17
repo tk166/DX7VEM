@@ -68,6 +68,10 @@ cargo run --release --manifest-path vem/Cargo.toml --bin render -- `
 # M3 全套验收（琴体+弓噪 vs 参考全链路 + 总线冒烟）
 powershell -ExecutionPolicy Bypass -File scripts/vem-m3-accept.ps1
 
+# M4：整曲混音（DX7 9 轨 + VEM CH3）与验收
+node scripts/render-mix.mjs out/p03-vem-mix.wav --stems
+node scripts/m4-check.mjs --gate
+
 # 参考实现（首次会 clone + 编译）
 powershell -ExecutionPolicy Bypass -File vem/fetch-reference.ps1
 .\vem\reference\target\release\ref-instrument.exe `
@@ -129,6 +133,6 @@ void  vem_free_mem(uint8_t* ptr, size_t bytes);
 | M1 单音还原（谱合成 + 自写 IFFT） | ✅ | 13 用例全 PASS：余弦 1.0000、电平 0.00 dB、包络 1.0000、逐采样 SNR ≈136 dB；wasm 64 KB |
 | M2 演奏性 | ✅ | 7 种弓法 + 滑音全 PASS：余弦 1.0000、逐采样 SNR ≈136 dB |
 | M3 琴体 + 总线 | ✅ | 琴体 IR + 弓噪 SNR 125–128 dB；压缩/混响/软限幅可选 |
-| M4 单轨替换 | ⬜ | CH3 旋律 + 衰减尾巴 |
+| M4 单轨替换 | ✅ | DX7 9 轨 + VEM CH3：电平 +0.05 dB、时移 0 ms、活动一致 0.999 |
 | M5 Web 集成 | ⬜ | AudioWorklet 适配层 + UI |
 | M6 收尾 | ⬜ | 体积 / CPU / 许可 |

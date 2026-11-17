@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Butterfly Lovers · DX7 (WASM)</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel2: #1e222b;
+    --line: #2a2f3a;
+    --text: #e6e9ef;
+    --dim: #8b93a7;
+    --accent: #6ea8fe;
+    --accent2: #7ee0b8;
+    --warn: #ffb86b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 22px 18px 60px; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+  h1 { font-size: 19px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .sub { color: var(--dim); font-size: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: var(--dim); margin: 0 0 12px; font-weight: 600; }
+
+  /* transport */
+  .transport { display: flex; align-items: center; gap: 14px; }
+  .playbtn {
+    width: 46px; height: 46px; border-radius: 50%; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); cursor: pointer; font-size: 16px;
+    display: grid; place-items: center; flex: 0 0 auto;
+  }
+  .playbtn:hover { border-color: var(--accent); color: var(--accent); }
+  .playbtn.on { background: var(--accent); color: #0b0d11; border-color: var(--accent); }
+  .time { font-variant-numeric: tabular-nums; color: var(--dim); min-width: 104px; font-size: 13px; }
+  .bar { position: relative; flex: 1; height: 22px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+  .bar .rail { position: absolute; left: 0; right: 0; height: 6px; border-radius: 3px; background: #252a34; overflow: hidden; }
+  .bar .fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+  .bar .knob {
+    position: absolute; width: 12px; height: 12px; border-radius: 50%; background: #fff;
+    transform: translateX(-50%); left: 0%; box-shadow: 0 0 0 3px rgba(110,168,254,.18);
+  }
+  .meter { width: 8px; height: 22px; border-radius: 4px; background: #252a34; overflow: hidden; flex: 0 0 auto; display: flex; flex-direction: column; justify-content: flex-end; }
+  .meter i { display: block; width: 100%; height: 0%; background: var(--accent2); transition: height .05s linear; }
+
+  /* generic row */
+  .row { display: grid; grid-template-columns: 120px 1fr 74px; gap: 12px; align-items: center; padding: 5px 0; }
+  .row .name { font-weight: 500; }
+  .row .name small { color: var(--dim); font-weight: 400; margin-left: 6px; }
+  .val { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; font-size: 12px; }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 4px; border-radius: 2px;
+    background: #2b3140; outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--accent); cursor: pointer; border: 2px solid #0f1115;
+  }
+  input[type=range]::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); border: 2px solid #0f1115; cursor: pointer; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 26px; }
+  @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } .row { grid-template-columns: 92px 1fr 62px; } }
+
+  .tracks { display: grid; grid-template-columns: 1fr 1fr; gap: 0 26px; }
+  @media (max-width: 720px) { .tracks { grid-template-columns: 1fr; } }
+
+  .fx-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .fx-head .t { display: flex; align-items: center; gap: 8px; }
+  .badge { font-size: 11px; color: var(--dim); border: 1px solid var(--line); border-radius: 20px; padding: 1px 8px; }
+  label.chk { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--dim); font-size: 12px; user-select: none; }
+  label.chk input { accent-color: var(--accent); }
+
+  .status { display: flex; gap: 10px; align-items: center; color: var(--dim); font-size: 12px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #555; }
+  .dot.ok { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); }
+  .dot.busy { background: var(--warn); }
+  .err { color: var(--warn); }
+  .hint { color: var(--dim); font-size: 12px; margin-top: 10px; }
+  code { background: #20242e; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Butterfly Lovers</h1>
+    <span class="sub" id="meta">DX7 · msfa(WASM) · 立体声</span>
+    <span style="flex:1"></span>
+    <span class="status"><span class="dot" id="dot"></span><span id="status">加载中…</span></span>
+  </header>
+
+  <div class="card">
+    <div class="transport">
+      <button class="playbtn" id="play" title="播放/暂停（空格）">▶</button>
+      <span class="time"><span id="tcur">0:00</span> / <span id="tdur">0:00</span></span>
+      <div class="bar" id="bar"><div class="rail"><div class="fill" id="fill"></div></div><div class="knob" id="knob"></div></div>
+      <div class="meter" title="输出电平"><i id="meter"></i></div>
+    </div>
+    <div class="row" style="grid-template-columns:120px 1fr 74px">
+      <span class="name">主音量</span>
+      <input type="range" id="master" min="-40" max="6" step="0.5" value="-2.8" />
+      <span class="val" id="masterVal">-2.8 dB</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>轨道音量</h2>
+    <div class="tracks" id="tracks"></div>
+  </div>
+
+  <div class="card">
+    <div class="fx-head">
+      <h2 style="margin:0">效果器</h2>
+      <label class="chk"><input type="checkbox" id="bypass" /> 旁通 FX（与 REAPER 干声 A/B）</label>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <div class="fx-head"><div class="t"><strong>混响</strong><span class="badge">总线 · Freeverb</span></div>
+          <label class="chk"><input type="checkbox" id="revOn" checked /> 开</label></div>
+        <div class="row"><span class="name">湿度</span><input type="range" id="revMix" min="0" max="0.6" step="0.01" value="0.18" /><span class="val" id="revMixVal">18%</span></div>
+        <div class="row"><span class="name">空间大小</span><input type="range" id="revSize" min="0" max="1" step="0.01" value="0.6" /><span class="val" id="revSizeVal">0.60</span></div>
+        <div class="row"><span class="name">高频衰减</span><input type="range" id="revDamp" min="0" max="1" step="0.01" value="0.45" /><span class="val" id="revDampVal">0.45</span></div>
+        <div class="row"><span class="name">立体声宽度</span><input type="range" id="revWidth" min="0" max="1" step="0.01" value="1" /><span class="val" id="revWidthVal">1.00</span></div>
+      </div>
+
+      <div>
+        <div class="fx-head"><div class="t"><strong>压缩器</strong><span class="badge">总线 · 软拐点</span></div>
+          <label class="chk"><input type="checkbox" id="compOn" checked /> 开</label></div>
+        <div class="row"><span class="name">阈值</span><input type="range" id="compThr" min="-48" max="0" step="1" value="-12" /><span class="val" id="compThrVal">-12 dB</span></div>
+        <div class="row"><span class="name">压缩比</span><input type="range" id="compRatio" min="1" max="12" step="0.5" value="2" /><span class="val" id="compRatioVal">2:1</span></div>
+        <div class="row"><span class="name">启动</span><input type="range" id="compAtk" min="1" max="100" step="1" value="15" /><span class="val" id="compAtkVal">15 ms</span></div>
+        <div class="row"><span class="name">释放</span><input type="range" id="compRel" min="20" max="800" step="10" value="200" /><span class="val" id="compRelVal">200 ms</span></div>
+        <div class="row"><span class="name">补偿增益</span><input type="range" id="compMakeup" min="0" max="12" step="0.5" value="1" /><span class="val" id="compMakeupVal">+1 dB</span></div>
+      </div>
+
+      <div>
+        <div class="fx-head"><div class="t"><strong>合唱</strong><span class="badge">仅 CH3 StringFlex</span></div>
+          <label class="chk"><input type="checkbox" id="choOn" checked /> 开</label></div>
+        <div class="row"><span class="name">速率</span><input type="range" id="choRate" min="0.1" max="4" step="0.05" value="0.6" /><span class="val" id="choRateVal">0.60 Hz</span></div>
+        <div class="row"><span class="name">深度</span><input type="range" id="choDepth" min="0" max="1" step="0.01" value="0.5" /><span class="val" id="choDepthVal">0.50</span></div>
+        <div class="row"><span class="name">湿声量</span><input type="range" id="choMix" min="0" max="1" step="0.01" value="0.7" /><span class="val" id="choMixVal">70%</span></div>
+        <div class="row"><span class="name">左右相位差</span><input type="range" id="choSpread" min="0" max="180" step="5" value="180" /><span class="val" id="choSpreadVal">180°</span></div>
+      </div>
+    </div>
+    <div class="hint" id="hint">提示：拖动进度条会从该位置重新开始（不追算之前的余音）。</div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
