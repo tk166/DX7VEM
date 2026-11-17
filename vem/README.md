@@ -68,9 +68,10 @@ cargo run --release --manifest-path vem/Cargo.toml --bin render -- `
 # M3 全套验收（琴体+弓噪 vs 参考全链路 + 总线冒烟）
 powershell -ExecutionPolicy Bypass -File scripts/vem-m3-accept.ps1
 
-# M4：整曲混音（DX7 9 轨 + VEM CH3）与验收
-node scripts/render-mix.mjs out/p03-vem-mix.wav --stems
+# M4：整曲混音（DX7 其余轨 + VEM 弦乐组）与验收
+node scripts/render-mix.mjs out/p03-vem-mix.wav --stems --write-config
 node scripts/m4-check.mjs --gate
+node scripts/vem-tracks-check.mjs --gate   # 每通道召回/时移
 
 # M5：worklet 冒烟（双 wasm + seek/参数/暂停）与单声部 CPU
 node scripts/test-worklet.mjs --engine both
@@ -144,3 +145,4 @@ void  vem_free_mem(uint8_t* ptr, size_t bytes);
 | M4 单轨替换 | ✅ | DX7 9 轨 + VEM CH3：电平 +0.05 dB、时移 0 ms、活动一致 0.999 |
 | M5 Web 集成 | ✅ | 双 wasm worklet（DX7 9 轨 + VEM CH3）+ 参数 UI；单声部 CPU 2.80% |
 | M6 收尾 | ✅ | 87.2 KB / imports 0；单声部 CPU 2.80%；数据与许可见 `docs/数据与许可.md` |
+| M7 弦乐组 | ✅ | CH6 中提琴、CH8 大提琴+低音提琴（按音高拆分）；整曲电平 +0.05 dB、召回 0.975–0.998；wasm 88.3 KB |

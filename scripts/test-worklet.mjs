@@ -45,25 +45,30 @@ const mix = JSON.parse(readFileSync("web/data/mix.json", "utf8"));
 let vem = null;
 if (engine !== "dx7" && existsSync("web/vem.wasm")) {
   const wasm = new Uint8Array(readFileSync("web/vem.wasm"));
-  const data = [];
-  for (const f of ["web/data/vem/body-violin.bin", "web/data/vem/noise.bin"]) {
-    if (existsSync(f)) data.push(new Uint8Array(readFileSync(f)).buffer);
-  }
-  const ch3 = tracks.find((t) => t.channel === 2);
-  vem = {
-    wasmBinary: wasm,
-    channel: 2,
-    gain: (ch3?.volume ?? 1) * 0.906,
-    calibration: 0.906,
-    data,
-    params: {
-      art: 0, bow: 0.5, pressure: 1, vibrato: 0.4, vibratoRate: 5.2,
-      attackMs: 8, attackVelMs: 60, releaseMs: 60, releaseSlowMs: 120,
-      bowSettleMs: 208.33, vibOnsetMs: 120, releaseRate: 0.5,
-      bodyMix: 0.18, bowNoiseOn: 1, bowNoise: 0.5,
-    },
-  };
-  console.log(`VEM: ${(wasm.byteLength / 1024).toFixed(1)} KB，数据 ${data.length} 个文件`);
+  const cfgPath = "web/data/vem-tracks.json";
+  const cfg = existsSync(cfgPath) ? JSON.parse(readFileSync(cfgPath, "utf8")) : [];
+  const noise = existsSync("web/data/vem/noise.bin")
+    ? new Uint8Array(readFileSync("web/data/vem/noise.bin")).buffer
+    : null;
+  const bodyCache = {};
+  const tracks = cfg.map((t) => {
+    if (!(t.instrument in bodyCache)) {
+      const p = `web/data/vem/body-${t.instrument}.bin`;
+      bodyCache[t.instrument] = existsSync(p) ? new Uint8Array(readFileSync(p)).buffer : null;
+    }
+    return {
+      ...t,
+      data: [bodyCache[t.instrument], noise].filter(Boolean),
+      params: {
+        art: 0, bow: 0.5, pressure: 1, vibrato: 0.4, vibratoRate: 5.2,
+        attackMs: 8, attackVelMs: 60, releaseMs: 60, releaseSlowMs: 120,
+        bowSettleMs: 208.33, vibOnsetMs: 120, releaseRate: 0.5,
+        bodyMix: 0.18, bowNoiseOn: 1, bowNoise: 0.5,
+      },
+    };
+  });
+  vem = { wasmBinary: wasm, tracks };
+  console.log(`VEM: ${(wasm.byteLength / 1024).toFixed(1)} KB，${tracks.length} 个声部`);
 }
 
 const send = (m) => proc.port.onmessage({ data: m });
@@ -89,11 +94,13 @@ for (let i = 0; i < 300 && !proc.ready; i++) {
 if (!proc.ready) throw new Error("init 未完成：没有任何 ready/error 消息");
 console.log("ready:", take().find((m) => m.type === "ready"));
 
-// 播放 3 秒
+// 播放 N 秒（可用 --seek 从一个有声段落开始）
+const seconds = Number(opt("--seconds", 3));
+const seekAt = Number(opt("--seek", 0));
+if (seekAt > 0) send({ type: "seek", time: seekAt });
 send({ type: "play" });
 let peak = 0, sum = 0, posMsgs = 0;
 const t0 = Date.now();
-const seconds = 3;
 for (let b = 0; b < (seconds * SR) / FRAMES; b++) {
   proc.process([], outputs);
   fakeNow += FRAMES / SR;
@@ -102,6 +109,7 @@ for (let b = 0; b < (seconds * SR) / FRAMES; b++) {
 const cpu = (Date.now() - t0) / 1000;
 for (const m of take()) if (m.type === "pos") posMsgs++;
 console.log(`播放 ${seconds}s：peak ${peak.toFixed(4)} | rms ${Math.sqrt(sum / (2 * seconds * SR)).toFixed(4)} | pos 消息 ${posMsgs} | CPU ${cpu.toFixed(2)}s = ${((cpu / seconds) * 100).toFixed(1)}% 实时`);
+console.log(`RESULT peak=${peak.toFixed(5)} rms=${Math.sqrt(sum / (2 * seconds * SR)).toFixed(5)} cpu_pct=${((cpu / seconds) * 100).toFixed(2)}`);
 if (peak <= 0.001) throw new Error("没有声音");
 
 // seek 到 200s 后继续播放

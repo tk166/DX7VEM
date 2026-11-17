@@ -21,9 +21,10 @@ const fx = {
 };
 let bypass = false;
 
-// VEM（CH3 弦乐）参数：默认 = M4 的 melody 预设
-const VEM_CHANNEL = 2;
-const VEM_CALIBRATION = 0.906; // 对齐 DX7 CH3 stem 的 RMS（M4 实测 -0.9 dB）
+// VEM（弦乐组）参数：默认 = M4 的 melody 预设
+const VEM_INSTRUMENTS = { violin: 0, viola: 1, cello: 2, bass: 3 };
+const BODY_MIX = { violin: 0.18, viola: 0.18, cello: 0.22, bass: 0.3 };
+let vemTracks = [];
 const vemParams = {
   art: 0,
   bow: 0.5,
@@ -45,6 +46,9 @@ const postVem = (patch) => {
   Object.assign(vemParams, patch);
   if (ready) node.port.postMessage({ type: "vemParam", params: patch });
 };
+const postVemTrack = (index, patch) => {
+  if (ready) node.port.postMessage({ type: "vemTrack", index, params: patch });
+};
 
 function setStatus(text, kind = "") {
   el.status.textContent = text;
@@ -54,12 +58,14 @@ function setStatus(text, kind = "") {
 async function boot() {
   try {
     setStatus("加载数据…", "busy");
-    const [tracks, mix, patches, notes] = await Promise.all([
+    const [tracks, mix, patches, notes, vemConfig] = await Promise.all([
       fetch("data/tracks.json").then((r) => r.json()),
       fetch("data/mix.json").then((r) => r.json()),
       fetch("data/patches.bin").then((r) => r.arrayBuffer()),
       fetch("data/notes.bin").then((r) => r.arrayBuffer()),
+      fetch("data/vem-tracks.json").then((r) => (r.ok ? r.json() : [])).catch(() => []),
     ]);
+    vemTracks = vemConfig;
     duration = mix.duration;
     el.tdur.textContent = fmt(duration);
     el.meta.textContent = `DX7 · msfa(WASM) · ${tracks.length} 轨 · 立体声`;
@@ -72,14 +78,20 @@ async function boot() {
     setStatus("加载 worklet…", "busy");
     await ctx.audioWorklet.addModule("worklet.js");
     setStatus("加载 wasm…", "busy");
-    const [wasmBinary, vemBinary, vemBody, vemNoise] = await Promise.all([
+    const instruments = [...new Set(vemTracks.map((t) => t.instrument))];
+    const [wasmBinary, vemBinary, noiseBuf, ...bodies] = await Promise.all([
       fetch("msfa.wasm").then((r) => r.arrayBuffer()),
       fetch("vem.wasm").then((r) => (r.ok ? r.arrayBuffer() : null)),
-      fetch("data/vem/body-violin.bin").then((r) => (r.ok ? r.arrayBuffer() : null)),
       fetch("data/vem/noise.bin").then((r) => (r.ok ? r.arrayBuffer() : null)),
+      ...instruments.map((inst) =>
+        fetch(`data/vem/body-${inst}.bin`).then((r) => (r.ok ? r.arrayBuffer() : null))
+      ),
     ]);
-    const vemData = [vemBody, vemNoise].filter(Boolean);
-    const vemReady = !!vemBinary;
+    const bodyByInst = {};
+    instruments.forEach((inst, i) => (bodyByInst[inst] = bodies[i]));
+    const dataCount =
+      (noiseBuf ? 1 : 0) + Object.values(bodyByInst).filter(Boolean).length;
+    const vemReady = !!vemBinary && vemTracks.length > 0;
 
     node = new AudioWorkletNode(ctx, "msfa-processor", {
       numberOfInputs: 0,
@@ -101,18 +113,22 @@ async function boot() {
       vem: vemReady
         ? {
             wasmBinary: vemBinary,
-            channel: VEM_CHANNEL,
-            // 初始增益 = CH3 轨道音量 × 校准
-            gain: (tracks.find((t) => t.channel === VEM_CHANNEL)?.volume ?? 1) * VEM_CALIBRATION,
-            calibration: VEM_CALIBRATION,
-            data: vemData,
-            params: vemParams,
+            tracks: vemTracks.map((t) => ({
+              ...t,
+              params: {
+                ...vemParams,
+                bodyMix: BODY_MIX[t.instrument] ?? 0.18,
+                bowNoiseOn: 1,
+              },
+              data: [bodyByInst[t.instrument], noiseBuf].filter(Boolean),
+            })),
           }
         : null,
     });
     if (vemReady) {
-      el.meta.textContent = `DX7 · msfa(WASM) 9 轨 + VEM 弦乐 CH3${vemData.length ? "（含琴体/弓噪）" : ""} · 立体声`;
-      setStatus(`VEM 数据 ${vemData.length} 个文件`, "busy");
+      buildVemUI();
+      el.meta.textContent = `DX7 9→${9 - new Set(vemTracks.map((t) => t.channel)).size + 1} 轨 + VEM 弦乐 ${vemTracks.length} 个声部${dataCount ? "（含琴体/弓噪）" : ""} · 立体声`;
+      setStatus(`VEM: ${vemTracks.length} 个声部，数据 ${dataCount} 个文件`, "busy");
     }
   } catch (e) {
     console.error(e);
@@ -144,14 +160,20 @@ function onWorklet(ev) {
   }
 }
 
+function vemEntry(channel) {
+  return vemTracks.find((t) => t.channel === channel) || null;
+}
+
 function buildTrackUI(tracks) {
   el.tracks.innerHTML = "";
   tracks.forEach((t, i) => {
     const row = document.createElement("div");
     row.className = "row";
-    const db = gainToDb(t.volume);
+    const entry = vemEntry(t.channel);
+    const db = gainToDb(entry && entry.gain !== undefined ? entry.gain : t.volume);
+    const tag = entry ? `<small>VEM ${entry.instrument}</small>` : "";
     row.innerHTML = `
-      <span class="name">CH${t.channel + 1}<small>${t.voice || t.name}</small></span>
+      <span class="name">CH${t.channel + 1}${tag}</span>
       <input type="range" min="-40" max="12" step="0.5" value="${db.toFixed(1)}" />
       <span class="val">${db.toFixed(1)} dB</span>`;
     const input = row.querySelector("input");
@@ -162,6 +184,33 @@ function buildTrackUI(tracks) {
       if (ready) node.port.postMessage({ type: "trackGain", index: i, value: dbToGain(v) });
     });
     el.tracks.appendChild(row);
+  });
+}
+
+function buildVemUI() {
+  const host = $("vemTracks");
+  if (!host) return;
+  host.innerHTML = "";
+  vemTracks.forEach((t, idx) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `
+      <span class="name">${t.label}</span>
+      <select data-vem="${idx}" style="grid-column: span 2; padding:6px; border-radius:8px; background:var(--panel2); color:var(--text); border:1px solid var(--line)">
+        <option value="0">Arco 连弓</option>
+        <option value="1">Marcato 重音</option>
+        <option value="2">Glissando 滑音</option>
+        <option value="3">Spiccato 跳弓</option>
+        <option value="4">Pizzicato 拨弦</option>
+        <option value="5">Col Legno 击弦</option>
+        <option value="6">Tremolo 颤弓</option>
+      </select>`;
+    const sel = row.querySelector("select");
+    sel.value = String(t.art ?? 0);
+    sel.addEventListener("change", () =>
+      postVemTrack(idx, { art: Number(sel.value) })
+    );
+    host.appendChild(row);
   });
 }
 

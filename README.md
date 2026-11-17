@@ -43,6 +43,7 @@ node scripts/vem-metrics.mjs out/ref-69.wav out/vem-69.wav --from 0.5 --to 3.5 -
 | M4 接数据、CH3 单轨替换 | ✅ |
 | M5 Web/AudioWorklet 集成 | ✅ |
 | M6 收尾（体积/CPU/许可） | ✅ |
+| M7 弦乐组（CH6 中提琴 + CH8 大提琴/低音提琴） | ✅ |
 
 ## 关键数字
 
@@ -50,6 +51,6 @@ node scripts/vem-metrics.mjs out/ref-69.wav out/vem-69.wav --from 0.5 --to 3.5 -
 |---|---|
 | 还原度（vs 参考，单音/弓法） | 频谱余弦 1.0000、包络 1.0000、逐采样 SNR ≈136 dB |
 | 琴体 + 弓噪（全链路） | SNR 125–128 dB、频段能量差 0.0 dB |
-| 整曲（DX7 9 轨 + VEM CH3） | 电平 +0.05 dB、时移 0 ms、活动一致 0.999、1/3 oct 谱余弦 0.988 |
-| wasm | 87.2 KB、imports 0（预算 120 KB） |
+| 整曲（DX7 其余轨 + VEM 4 个弦乐声部） | 电平 +0.05 dB、时移 0 ms、活动一致 0.999、1/3 oct 谱余弦 0.988 |
+| wasm | 88.3 KB、imports 0（预算 120 KB） |
 | 单声部 CPU | 2.80% 实时 @48 kHz（含琴体 + 弓噪） |

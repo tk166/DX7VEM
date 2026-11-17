@@ -19,7 +19,7 @@ use crate::smooth::{block_coef, smooth_to, soft_clip};
 use crate::spectrum::{coef_for, TimbreParams};
 
 pub const BLOCK: usize = 64;
-pub const MAX_VOICES: usize = 8;
+pub const MAX_VOICES: usize = 12;
 const MAX_TRANS: usize = 8;
 
 /// 与参考实现一致的默认种子（`ref-instrument --seed 12345`）。

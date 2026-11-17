@@ -1,22 +1,19 @@
-// 离线整曲混音：DX7(msfa) 9 轨 + VEM(CH3 旋律) → float32 WAV
+// 离线整曲混音：DX7(msfa) 保留未接管的轨道 + VEM 接管多条弦乐轨 → float32 WAV
 //
 // 用法:
 //   node scripts/render-mix.mjs out/p03-vem-mix.wav [选项]
 // 选项:
-//   --sr 44100                 采样率（默认与 p03-reaper 一致）
-//   --notes web/data/notes.bin
-//   --tracks web/data/tracks.json
-//   --patches web/data/patches.bin
-//   --mix web/data/mix.json
-//   --vem-channel 2            VEM 接管的通道（0 基，CH3 = 2）
-//   --vem-gain auto|<数值>      CH3 电平校准（auto = 对齐 DX7 的 CH3 stem RMS）
-//   --data out/vem-data        琴体 IR / 弓噪（不存在则不加）
-//   --art arco|pizzicato|...
-//   --dur 秒                    渲染长度（默认 mix.duration + 2）
-//   --stems                     额外写出三个 stem 便于排查
+//   --sr 44100
+//   --vem-tracks web/data/vem-tracks.json   通道→乐器映射（可多条同通道，按音域拆分）
+//   --notes/--tracks/--patches/--mix        输入
+//   --data out/vem-data                     琴体 IR / 弓噪
+//   --preset melody|fidelity                包络预设（默认 melody）
+//   --attack-ms/--attack-vel-ms/--release-ms/--release-slow-ms/--vib-onset-ms
+//   --dur 秒
+//   --stems                                 写出每个 VEM 引擎的 stem
+//   --write-config                          把校准后的增益写回 vem-tracks.json
 //
-// 注意：msfa 侧 FX 全关（混响/压缩/合唱），只比干声；VEM 的总线也关。
-// 这样叠加结果可以直接和 REAPER 的干混（p03-reaper.wav）比电平/节奏。
+// 电平校准：每个 VEM 通道，用 DX7 同通道 stem 的 RMS 对齐 VEM 该通道的合成 RMS。
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
@@ -38,9 +35,13 @@ const tracksPath = opt("--tracks", join(root, "web/data/tracks.json"));
 const patchesPath = opt("--patches", join(root, "web/data/patches.bin"));
 const mixPath = opt("--mix", join(root, "web/data/mix.json"));
 const dataDir = opt("--data", join(root, "out/vem-data"));
-const art = opt("--art", "arco");
-const vemChannel = Number(opt("--vem-channel", 2));
+const configPath = opt("--vem-tracks", join(root, "web/data/vem-tracks.json"));
 const outPath = argv.find((a) => a.endsWith(".wav")) || join(root, "out/p03-vem-mix.wav");
+const preset = opt("--preset", "melody");
+const explicitEnv = ["--attack-ms", "--attack-vel-ms", "--release-ms", "--release-slow-ms", "--bow-settle-ms", "--vib-onset-ms"].some((k) => argv.includes(k));
+
+const INSTRUMENT_INDEX = { violin: 0, viola: 1, cello: 2, bass: 3 };
+const BODY_MIX = { violin: 0.18, viola: 0.18, cello: 0.22, bass: 0.3 };
 
 // ---------------------------------------------------------------- 输入
 
@@ -68,11 +69,13 @@ const { events, duration: notesDuration } = loadEvents(notesPath);
 const tracks = JSON.parse(readFileSync(tracksPath, "utf8"));
 const patches = readFileSync(patchesPath);
 const mix = JSON.parse(readFileSync(mixPath, "utf8"));
+let vemTracks = JSON.parse(readFileSync(configPath, "utf8"));
 const master = mix.masterVolume ?? 1;
 const dur = Number(opt("--dur", Math.max(notesDuration, mix.duration ?? 0) + 2));
 const frames = Math.ceil(dur * SR);
+const vemChannels = new Set(vemTracks.map((v) => v.channel));
 console.log(
-  `输入: ${events.length} 事件 / ${dur.toFixed(1)}s @${SR}Hz | master=${master.toFixed(3)} | VEM=CH${vemChannel + 1}`
+  `输入: ${events.length} 事件 / ${dur.toFixed(1)}s @${SR}Hz | master=${master.toFixed(3)} | VEM 通道 ${[...vemChannels].map((c) => `CH${c + 1}`).join(", ")}`
 );
 
 // ---------------------------------------------------------------- wasm
@@ -82,7 +85,6 @@ async function loadWasm(path, imports = {}) {
   const { instance } = await WebAssembly.instantiate(bytes, imports);
   return instance.exports;
 }
-
 const heapF32 = (E, ptr, n) => new Float32Array(E.memory.buffer, ptr, n);
 function heapBytes(E, ptr, bytes) {
   new Uint8Array(E.memory.buffer, ptr, bytes.length).set(bytes);
@@ -116,6 +118,7 @@ function makeMsfa(channels) {
   return { mx, ptrs };
 }
 
+// 渲染（可选累加）；channels 决定触发哪些通道的事件
 function renderMsfa({ mx }, channels, targetL, targetR, add) {
   const outL = msfa.malloc(BLOCK * 4);
   const outR = msfa.malloc(BLOCK * 4);
@@ -132,11 +135,13 @@ function renderMsfa({ mx }, channels, targetL, targetR, add) {
     const sl = heapF32(msfa, outL, BLOCK);
     const sr = heapF32(msfa, outR, BLOCK);
     const n = Math.min(BLOCK, frames - pos);
-    for (let i = 0; i < n; i++) {
-      if (add) {
+    if (add) {
+      for (let i = 0; i < n; i++) {
         targetL[pos + i] += sl[i];
         targetR[pos + i] += sr[i];
-      } else {
+      }
+    } else {
+      for (let i = 0; i < n; i++) {
         targetL[pos + i] = sl[i];
         targetR[pos + i] = sr[i];
       }
@@ -146,42 +151,62 @@ function renderMsfa({ mx }, channels, targetL, targetR, add) {
   msfa.free(outR);
 }
 
+// 渲染某个通道的 DX7 stem（单声道，用于校准和诊断）
+function msfaChannelStem(ch) {
+  const { mx } = makeMsfa(new Set([ch]));
+  const outL = msfa.malloc(BLOCK * 4);
+  const outR = msfa.malloc(BLOCK * 4);
+  const mono = new Float32Array(frames);
+  let ei = 0;
+  for (let pos = 0; pos < frames; pos += BLOCK) {
+    const nowT = pos / SR;
+    while (ei < events.length && events[ei].t <= nowT) {
+      const e = events[ei++];
+      if (e.ch !== ch) continue;
+      if (e.on) msfa.msfa_mixer_note_on(mx, ch, e.note, e.vel);
+      else msfa.msfa_mixer_note_off(mx, ch, e.note);
+    }
+    msfa.msfa_mixer_render(mx, outL, outR, BLOCK);
+    const sl = heapF32(msfa, outL, BLOCK);
+    const n = Math.min(BLOCK, frames - pos);
+    for (let i = 0; i < n; i++) mono[pos + i] = sl[i];
+  }
+  msfa.free(outL);
+  msfa.free(outR);
+  return mono;
+}
+
 // ---------------------------------------------------------------- VEM
 
-const eng = vem.vem_new(SR, 0);
-vem.vem_set_seed(eng, 12345);
-vem.vem_set_gain(eng, 1);
-vem.vem_set_master(eng, master);
-vem.vem_set_reverb(eng, 0, 0.6, 0.45, 1);
-vem.vem_set_comp(eng, 0, -12, 2, 15, 200, 1);
-vem.vem_set_articulation(eng, ["arco", "marcato", "glissando", "spiccato", "pizzicato", "collegno", "tremolo"].indexOf(art));
-
-// 包络/演奏参数
-//   --preset melody（默认）：收紧起音/释放，适配《梁祝》这种大量 30 ms 短音
-//   --preset fidelity        ：完全用参考实现的默认包络
-const preset = opt("--preset", "melody");
-const explicitEnv = ["--attack-ms", "--attack-vel-ms", "--release-ms", "--release-slow-ms", "--bow-settle-ms", "--vib-onset-ms"].some((k) => argv.includes(k));
-if (preset === "melody" || explicitEnv) {
-  const dx = preset === "melody" && !explicitEnv;
-  vem.vem_set_envelope(
-    eng,
-    Number(opt("--attack-ms", dx ? 8 : 20.833)),
-    Number(opt("--attack-vel-ms", dx ? 60 : 625)),
-    Number(opt("--release-ms", dx ? 60 : 20.833)),
-    Number(opt("--release-slow-ms", dx ? 120 : 208.333)),
-    Number(opt("--bow-settle-ms", 208.333)),
-    Number(opt("--vib-onset-ms", dx ? 120 : 0)),
-    Number(opt("--vib-onset-ramp-ms", 60))
-  );
-  console.log(`包络: ${dx ? "melody 预设" : "自定义"}`);
-}
-if (argv.includes("--vibrato")) {
-  vem.vem_set_vibrato(eng, Number(opt("--vibrato", 0.4)), 5.2);
+function applyVemParams(eng, entry) {
+  vem.vem_set_seed(eng, 12345);
+  vem.vem_set_master(eng, master);
+  vem.vem_set_gain(eng, 1);
+  vem.vem_set_polyphonic(eng, entry.polyphonic ? 1 : 0);
+  vem.vem_set_articulation(eng, ["arco", "marcato", "glissando", "spiccato", "pizzicato", "collegno", "tremolo"].indexOf(entry.art || "arco"));
+  vem.vem_set_bow(eng, 0.5, 1);
+  vem.vem_set_vibrato(eng, 0.4, 5.2);
+  vem.vem_set_body(eng, BODY_MIX[entry.instrument] ?? 0.18, 0.6);
+  vem.vem_set_bow_noise(eng, 1, 0.5);
+  const melody = (entry.preset || preset) === "melody" || explicitEnv;
+  const dx = (entry.preset || preset) === "melody" && !explicitEnv;
+  if (melody) {
+    vem.vem_set_envelope(
+      eng,
+      Number(opt("--attack-ms", dx ? 8 : 20.833)),
+      Number(opt("--attack-vel-ms", dx ? 60 : 625)),
+      Number(opt("--release-ms", dx ? 60 : 20.833)),
+      Number(opt("--release-slow-ms", dx ? 120 : 208.333)),
+      Number(opt("--bow-settle-ms", 208.333)),
+      Number(opt("--vib-onset-ms", dx ? 120 : 0)),
+      60
+    );
+  }
 }
 
-if (existsSync(dataDir)) {
+function loadVemData(eng, instrument) {
   let loaded = 0;
-  for (const name of ["body-violin.bin", "noise.bin"]) {
+  for (const name of [`body-${instrument}.bin`, "noise.bin"]) {
     const p = join(dataDir, name);
     if (!existsSync(p)) continue;
     const bytes = readFileSync(p);
@@ -191,109 +216,124 @@ if (existsSync(dataDir)) {
     vem.vem_free_mem(ptr, bytes.length);
     loaded++;
   }
-  console.log(`VEM 数据: ${dataDir} (${loaded} 个文件)`);
+  return loaded;
 }
 
-const velCurve = opt("--vel-curve", "off");
-function renderVem(targetL, targetR) {
+const engines = vemTracks.map((entry) => {
+  const eng = vem.vem_new(SR, INSTRUMENT_INDEX[entry.instrument] ?? 0);
+  applyVemParams(eng, entry);
+  const loaded = loadVemData(eng, entry.instrument);
+  console.log(`  VEM ${entry.label}: ${entry.instrument} ch=${entry.channel + 1} notes=${entry.minNote}..${entry.maxNote} poly=${!!entry.polyphonic} data=${loaded}`);
+  return { eng, entry, stem: null };
+});
+
+function engineEvents(entry) {
+  return events.filter((e) => e.ch === entry.channel && e.note >= entry.minNote && e.note <= entry.maxNote);
+}
+
+// 渲染一个引擎 → 单声道 stem（VEM 输出本来就是 L==R）
+function renderEngine(engine) {
   const outL = vem.vem_alloc(BLOCK * 4);
   const outR = vem.vem_alloc(BLOCK * 4);
-  const ev = events.filter((e) => e.ch === vemChannel);
+  const mono = new Float32Array(frames);
+  const ev = engineEvents(engine.entry);
   let ei = 0;
   for (let pos = 0; pos < frames; pos += BLOCK) {
     const nowT = pos / SR;
     while (ei < ev.length && ev[ei].t <= nowT) {
       const e = ev[ei++];
-      if (e.on) {
-        if (velCurve !== "off") {
-          const v = Math.max(0, Math.min(1, e.vel / 127));
-          vem.vem_set_volume(eng, Math.max(0.15, Math.min(1, 0.15 + 0.85 * Math.pow(v, 1.0))));
-        }
-        vem.vem_note_on(eng, e.note, e.vel / 127);
-      } else {
-        vem.vem_note_off(eng, e.note);
-      }
+      if (e.on) vem.vem_note_on(engine.eng, e.note, e.vel / 127);
+      else vem.vem_note_off(engine.eng, e.note);
     }
-    vem.vem_render(eng, outL, outR, BLOCK);
+    vem.vem_render(engine.eng, outL, outR, BLOCK);
     const sl = heapF32(vem, outL, BLOCK);
-    const sr = heapF32(vem, outR, BLOCK);
     const n = Math.min(BLOCK, frames - pos);
-    for (let i = 0; i < n; i++) {
-      targetL[pos + i] = sl[i];
-      targetR[pos + i] = sr[i];
-    }
+    for (let i = 0; i < n; i++) mono[pos + i] = sl[i];
   }
   vem.vem_free_mem(outL, BLOCK * 4);
   vem.vem_free_mem(outR, BLOCK * 4);
+  engine.stem = mono;
+  return mono;
 }
 
-// ---------------------------------------------------------------- 电平校准
-
-const rms = (l, r) => {
+const rmsOf = (arr) => {
   let s = 0;
-  for (let i = 0; i < l.length; i++) s += l[i] * l[i] + r[i] * r[i];
-  return Math.sqrt(s / (2 * l.length));
+  for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
+  return Math.sqrt(s / Math.max(1, arr.length));
 };
 
-const otherChannels = new Set(tracks.map((t) => t.channel).filter((c) => c !== vemChannel));
+console.log("渲染 VEM stems…");
+for (const e of engines) renderEngine(e);
 
-console.log("渲染 DX7 CH3 stem（仅用于电平校准）…");
-const ch3L = new Float32Array(frames);
-const ch3R = new Float32Array(frames);
-renderMsfa(makeMsfa(new Set([vemChannel])), new Set([vemChannel]), ch3L, ch3R, false);
-const rmsCh3 = rms(ch3L, ch3R);
-
-console.log("渲染 VEM CH3 stem…");
-const vemL = new Float32Array(frames);
-const vemR = new Float32Array(frames);
-renderVem(vemL, vemR);
-const rmsVem = rms(vemL, vemR);
-
-let vemGain;
-if (opt("--vem-gain", "auto") === "auto") {
-  vemGain = rmsVem > 1e-12 ? rmsCh3 / rmsVem : 1;
-} else {
-  vemGain = Number(opt("--vem-gain", "1"));
+// 每通道电平校准：DX7 同通道 stem 的 RMS / VEM 合成 RMS
+const gainByChannel = new Map();
+const dx7Stems = new Map();
+for (const ch of vemChannels) {
+  const group = engines.filter((e) => e.entry.channel === ch);
+  const sum = new Float32Array(frames);
+  for (const e of group) {
+    const s = e.stem;
+    for (let i = 0; i < frames; i++) sum[i] += s[i];
+  }
+  const rmsVem = rmsOf(sum);
+  const dx7 = msfaChannelStem(ch);
+  dx7Stems.set(ch, dx7);
+  const rmsDx7 = rmsOf(dx7);
+  const gain = rmsVem > 1e-12 ? rmsDx7 / rmsVem : 1;
+  gainByChannel.set(ch, gain);
+  for (const e of group) e.entry.gain = gain;
+  console.log(
+    `  CH${ch + 1}: DX7 rms=${rmsDx7.toFixed(5)} | VEM rms=${rmsVem.toFixed(5)} | 增益 ${gain.toFixed(3)} (${(20 * Math.log10(gain)).toFixed(1)} dB)`
+  );
 }
-console.log(
-  `电平: DX7 CH3 rms=${rmsCh3.toFixed(5)} | VEM rms=${rmsVem.toFixed(5)} | VEM 增益 ${vemGain.toFixed(3)} (${(20 * Math.log10(vemGain)).toFixed(1)} dB)`
-);
+
+if (has("--write-config")) {
+  writeFileSync(configPath, JSON.stringify(vemTracks, null, 2) + "\n", "utf8");
+  console.log(`已写回 ${configPath}`);
+}
 
 if (has("--stems")) {
   const dir = join(root, "out/m4-stems");
   mkdirSync(dir, { recursive: true });
-  writeFloatWav(join(dir, "ch3-dx7.wav"), ch3L, ch3R, SR);
-  writeFloatWav(join(dir, "ch3-vem.wav"), vemL, vemR, SR);
+  for (const e of engines) {
+    const name = `vem-${e.entry.instrument}-ch${e.entry.channel + 1}.wav`;
+    writeFloatWav(join(dir, name), e.stem, e.stem, SR);
+  }
+  for (const [ch, stem] of dx7Stems) {
+    writeFloatWav(join(dir, `dx7-ch${ch + 1}.wav`), stem, stem, SR);
+  }
   console.log(`stems → ${dir}`);
 }
 
 // ---------------------------------------------------------------- 混音
 
-console.log("渲染 DX7 其余通道 + 混音…");
+const otherChannels = new Set(tracks.map((t) => t.channel).filter((c) => !vemChannels.has(c)));
+console.log(`渲染 DX7 其余通道（${[...otherChannels].map((c) => "CH" + (c + 1)).join(", ")}）并混音…`);
 const mixL = new Float32Array(frames);
 const mixR = new Float32Array(frames);
 renderMsfa(makeMsfa(otherChannels), otherChannels, mixL, mixR, false);
+const vemMono = new Float32Array(frames);
+for (const e of engines) {
+  const gain = e.entry.gain ?? gainByChannel.get(e.entry.channel) ?? 1;
+  const s = e.stem;
+  for (let i = 0; i < frames; i++) vemMono[i] += s[i] * gain;
+}
+for (let i = 0; i < frames; i++) {
+  mixL[i] += vemMono[i];
+  mixR[i] += vemMono[i];
+}
+
 let peak = 0;
 for (let i = 0; i < frames; i++) {
-  mixL[i] += vemL[i] * vemGain;
-  mixR[i] += vemR[i] * vemGain;
   const a = Math.max(Math.abs(mixL[i]), Math.abs(mixR[i]));
   if (a > peak) peak = a;
 }
 
 writeFloatWav(outPath, mixL, mixR, SR);
 console.log(`写出 ${outPath}`);
-console.log(
-  `  长度 ${dur.toFixed(2)}s | peak ${peak.toFixed(4)} (${(20 * Math.log10(peak || 1e-9)).toFixed(2)} dBFS) | rms ${rms(mixL, mixR).toFixed(5)}`
-);
-
-// ---------------------------------------------------------------- WAV
+console.log(`  长度 ${dur.toFixed(2)}s | peak ${peak.toFixed(4)} (${(20 * Math.log10(peak || 1e-9)).toFixed(2)} dBFS) | rms ${rmsOf(mixL).toFixed(5)}`);
 
 function writeFloatWav(path, l, r, sr) {
-  writeFloatWavBuffer(path, l, r, sr);
-}
-
-function writeFloatWavBuffer(path, l, r, sr) {
   const frames = Math.min(l.length, r.length);
   const buf = Buffer.alloc(44 + frames * 8);
   buf.write("RIFF", 0);
@@ -301,7 +341,7 @@ function writeFloatWavBuffer(path, l, r, sr) {
   buf.write("WAVE", 8);
   buf.write("fmt ", 12);
   buf.writeUInt32LE(16, 16);
-  buf.writeUInt16LE(3, 20); // float
+  buf.writeUInt16LE(3, 20);
   buf.writeUInt16LE(2, 22);
   buf.writeUInt32LE(sr, 24);
   buf.writeUInt32LE(sr * 8, 28);

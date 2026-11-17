@@ -1,0 +1,46 @@
+[
+  {
+    "channel": 2,
+    "label": "CH3 小提琴",
+    "instrument": "violin",
+    "minNote": 0,
+    "maxNote": 127,
+    "polyphonic": false,
+    "preset": "melody",
+    "calibration": 0.906,
+    "gain": 0.9063179241941115
+  },
+  {
+    "channel": 5,
+    "label": "CH6 中提琴",
+    "instrument": "viola",
+    "minNote": 0,
+    "maxNote": 127,
+    "polyphonic": true,
+    "preset": "melody",
+    "calibration": 0.906,
+    "gain": 0.08427090966287687
+  },
+  {
+    "channel": 7,
+    "label": "CH8 大提琴",
+    "instrument": "cello",
+    "minNote": 44,
+    "maxNote": 127,
+    "polyphonic": true,
+    "preset": "melody",
+    "calibration": 0.906,
+    "gain": 0.06770126047167252
+  },
+  {
+    "channel": 7,
+    "label": "CH8 低音提琴",
+    "instrument": "bass",
+    "minNote": 0,
+    "maxNote": 43,
+    "polyphonic": true,
+    "preset": "melody",
+    "calibration": 0.906,
+    "gain": 0.06770126047167252
+  }
+]

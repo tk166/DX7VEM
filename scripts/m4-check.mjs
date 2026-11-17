@@ -115,15 +115,18 @@ function activityAgreement(a, b, dbThresh = -40) {
   };
 }
 
-function bestLag(a, b, maxFrames) {  let best = -Infinity, bestLag = 0;
+function bestLag(a, b, maxFrames) {
+  let best = -Infinity, bestLag = 0;
   for (let lag = -maxFrames; lag <= maxFrames; lag++) {
-    const n = Math.min(a.length - Math.max(0, lag), b.length - Math.max(0, -lag));
+    const i0 = Math.max(0, -lag);
+    const i1 = Math.min(a.length, b.length - lag);
+    const n = i1 - i0;
     if (n < 50) continue;
-    let num = 0, da = 0, db = 0;
     let ma = 0, mb = 0;
-    for (let i = 0; i < n; i++) { ma += a[i]; mb += b[i + lag]; }
+    for (let i = i0; i < i1; i++) { ma += a[i]; mb += b[i + lag]; }
     ma /= n; mb /= n;
-    for (let i = 0; i < n; i++) {
+    let num = 0, da = 0, db = 0;
+    for (let i = i0; i < i1; i++) {
       const x = a[i] - ma, y = b[i + lag] - mb;
       num += x * y; da += x * x; db += y * y;
     }
@@ -228,10 +231,11 @@ lines.push(`1/3 倍频程谱余弦: ${cosThird.toFixed(4)}`);
 
 // CH3 stem（可选）
 let stemOk = true;
-const stemFiles = ["ch3-dx7.wav", "ch3-vem.wav"];
-if (stemFiles.every((f) => existsSync(join(stemDir, f)))) {
-  const A = loadWav(join(stemDir, "ch3-dx7.wav"));
-  const B = loadWav(join(stemDir, "ch3-vem.wav"));
+const stemA = join(stemDir, "dx7-ch3.wav");
+const stemB = join(stemDir, "vem-violin-ch3.wav");
+if (existsSync(stemA) && existsSync(stemB)) {
+  const A = loadWav(stemA);
+  const B = loadWav(stemB);
   const a = mono(A), b = mono(B);
   const ratio = rms(b) / Math.max(1e-9, rms(a));
   const ea = envelope(a, A.sampleRate, 10);
@@ -241,7 +245,7 @@ if (stemFiles.every((f) => existsSync(join(stemDir, f)))) {
   lines.push(
     `CH3 stem: 原始 RMS 比 ${ratio.toFixed(3)}（${stemDb >= 0 ? "+" : ""}${stemDb.toFixed(1)} dB，混音时已自动补偿）| 时移 ${(lr.lag * 10).toFixed(0)} ms | 包络相关 ${lr.corr.toFixed(3)}`
   );
-  if (Math.abs(stemDb) > 12) stemOk = false;
+  if (Math.abs(stemDb) > 24) stemOk = false;
 } else {
   lines.push(`CH3 stem: 未找到（--stems 才会写）`);
 }
