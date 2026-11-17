@@ -224,4 +224,56 @@ let noise_scale = match articulation {
 
 wasm：**66.9 KB**、imports = 0。
 
+---
+
+# M3（琴体 + 总线 + 弓噪）阶段
+
+## 19. 数据不进 wasm：`VEMD` 容器 + 运行时装载
+
+琴体 IR 4 件乐器共 ~380 KB、弓噪 5.21 s 就有 ~1 MB（f32），直接嵌进 wasm
+和"≤120 KB"的目标冲突；而且计划 §9 要求 v1 的数据自采/自合成。
+
+做法：
+- 数据走 **`vem_set_patch(blob, len)`**（原生侧 `render --data <dir>`），格式见 `vem/src/data.rs`；
+- 开发期用 `vem/tools/gen-data` 把参考实现的 FLAC 转成 blob（只用于对拍，产物在 `out/vem-data/`，不入库）；
+- 交付时换自采/合成数据，wasm 本体不背素材。
+
+## 20. 琴体卷积可以"零延迟"逐采样对齐
+
+参考实现 `reverb.rs` 不是普通的 overlap-add：
+- IR **前 16 个 tap 直接时域卷积**（所以当前采样立刻有输出）；
+- 其余部分按 **2 倍递增**的分块做 FFT，结果加到环形输出缓冲的**未来位置**。
+
+只要是同一个线性卷积，分块方式不同只带来舍入差。我们按同样结构实现
+（`vem/src/body.rs`），对拍结果：**SNR 125–128 dB**、频段能量差 **0.0 dB**。
+注意 FFT 逆变换同样**不乘 1/n**，分块结果要乘 `1/width`（和参考一样）。
+
+## 21. 弓噪的起点要跟着"第一次随机抽样"走
+
+参考在 `Division::initialize_instruments` 里为每个乐器分配噪声起点：
+`noise_position = len × (i + 0.5×uniform) / instrument_count`。
+这个 `uniform` 是 Division 随机序列的**第一次**抽样——如果我们的引擎不消费它，
+后面 spiccato/tremolo 的随机数就整体错位。
+
+做法：`Engine::new/reset` 先 `rng.get_uniform()` 存成 `noise_anchor`，装载数据时再用它算起点。
+
+## 22. 总线（压缩/混响/软限幅）默认关闭
+
+参照 DX7 版的总线（`msfa_wrapper.cpp`）逐段移植：
+`通道增益 → 压缩 → Freeverb（干湿）→ 主音量 → softClip(0.98)`。
+但 VEM 参考没有总线，**默认关闭**（`--bus` 才开），否则 M1–M3 的对拍都会多一层非线性。
+冒烟结果：`--bus` 输出 peak 0.56、无 NaN/Inf、无削顶。
+
+## 23. M3 对拍结果
+
+真值 = `ref-render`（完整 Director：琴体 + 弓噪），我们的侧 `--data out/vem-data`：
+
+| 用例 | 频谱余弦 | 频段能量差 | SNR |
+|---|---|---|---|
+| violin / viola / cello / bass arco | 1.0000 | 0.0 dB | 125.3–128.1 dB |
+| violin spiccato / pizzicato / tremolo | 1.0000 | 0.0 dB | 同量级 |
+
+wasm：**83.5 KB**、imports = 0（不含素材）。
+
+
 

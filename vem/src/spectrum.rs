@@ -1,4 +1,4 @@
-//! 每件乐器的谱合成系数（全部来自参考实现 `instrument.rs` 的拟合值）。
+﻿//! 每件乐器的谱合成系数（全部来自参考实现 `instrument.rs` 的拟合值）。
 //!
 //! 这些常数决定"音色"，M1 阶段**一个字节都不改**——先把还原跑通，
 //! 之后再通过 `TimbreParams`（见 `instrument.rs`）暴露可调项做超越。
@@ -21,6 +21,10 @@ pub struct VoiceCoef {
     /// tremolo 一个弓程的长度/间隔（采样 @48k）
     pub tremolo_length: i32,
     pub tremolo_space: i32,
+    /// 琴体共振量（参考实现：violin/viola 0.18、cello 0.22、bass 0.30）
+    pub body_mix: f32,
+    /// 弓噪基础量（参考实现：violin 1.0、viola/cello 0.6、bass 0.9）
+    pub bow_noise_scale: f32,
 }
 
 pub fn coef_for(t: InstrumentType) -> VoiceCoef {
@@ -37,6 +41,8 @@ pub fn coef_for(t: InstrumentType) -> VoiceCoef {
             phase_shift: 0.65,
             tremolo_length: 4100,
             tremolo_space: 200,
+            body_mix: 0.18,
+            bow_noise_scale: 1.0,
         },
         InstrumentType::Viola => VoiceCoef {
             vibrato_low: 5.15,
@@ -50,6 +56,8 @@ pub fn coef_for(t: InstrumentType) -> VoiceCoef {
             phase_shift: 0.35,
             tremolo_length: 4600,
             tremolo_space: 200,
+            body_mix: 0.18,
+            bow_noise_scale: 0.6,
         },
         InstrumentType::Cello => VoiceCoef {
             vibrato_low: 5.0,
@@ -63,6 +71,8 @@ pub fn coef_for(t: InstrumentType) -> VoiceCoef {
             phase_shift: 0.0,
             tremolo_length: 4600,
             tremolo_space: 400,
+            body_mix: 0.22,
+            bow_noise_scale: 0.6,
         },
         InstrumentType::Bass => VoiceCoef {
             vibrato_low: 4.9,
@@ -76,6 +86,8 @@ pub fn coef_for(t: InstrumentType) -> VoiceCoef {
             phase_shift: 0.0,
             tremolo_length: 4500,
             tremolo_space: 1000,
+            body_mix: 0.30,
+            bow_noise_scale: 0.9,
         },
     }
 }

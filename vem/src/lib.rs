@@ -11,12 +11,17 @@
 //! - 缓冲由 JS 侧调用 `vem_alloc` 分配一次，指针复用。
 
 pub mod articulations;
+pub mod body;
+pub mod comp;
+pub mod data;
 pub mod engine;
 pub mod envelope;
 pub mod fft;
 pub mod filter;
 pub mod instrument;
+pub mod noise;
 pub mod random;
+pub mod reverb;
 pub mod smooth;
 pub mod spectrum;
 
@@ -67,9 +72,15 @@ pub extern "C" fn vem_version() -> i32 {
 
 // ---------------------------------------------------------------- 参数
 
-/// 音色/数据 blob（M3 起用于系数与 IR；当前为空操作，保持 ABI 稳定）。
+/// 音色/数据 blob（`VEMD` 容器：琴体 IR + 弓噪，见 `data.rs`）。
 #[no_mangle]
-pub extern "C" fn vem_set_patch(_p: *mut c_void, _blob: *const u8, _len: usize) {}
+pub extern "C" fn vem_set_patch(p: *mut c_void, blob: *const u8, len: usize) {
+    if p.is_null() || blob.is_null() || len == 0 {
+        return;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(blob, len) };
+    engine_mut(p).set_data(bytes);
+}
 
 #[no_mangle]
 pub extern "C" fn vem_set_seed(p: *mut c_void, seed: u32) {
@@ -235,27 +246,27 @@ pub extern "C" fn vem_set_body(p: *mut c_void, mix: f32, size: f32) {
 }
 
 #[no_mangle]
-pub extern "C" fn vem_set_reverb(p: *mut c_void, mix: f32, _size: f32, _damp: f32, _width: f32) {
+pub extern "C" fn vem_set_reverb(p: *mut c_void, mix: f32, size: f32, damp: f32, width: f32) {
     if p.is_null() {
         return;
     }
-    engine_mut(p).reverb_mix = mix.clamp(0.0, 1.0);
+    engine_mut(p).set_reverb(mix, size, damp, width);
 }
 
 #[no_mangle]
 pub extern "C" fn vem_set_comp(
     p: *mut c_void,
     on: i32,
-    _thr: f32,
-    _ratio: f32,
-    _atk: f32,
-    _rel: f32,
-    _makeup: f32,
+    thr: f32,
+    ratio: f32,
+    atk: f32,
+    rel: f32,
+    makeup: f32,
 ) {
     if p.is_null() {
         return;
     }
-    engine_mut(p).comp_on = on != 0;
+    engine_mut(p).set_comp(on != 0, thr, ratio, atk, rel, makeup);
 }
 
 /// 0=关 1=采样 2=合成（M3 实现）。

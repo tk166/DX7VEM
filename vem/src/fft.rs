@@ -114,7 +114,7 @@ impl FftCache {
         self.buf_im = buf_im;
     }
 
-    /// 复数 IFFT（正指数），含 1/n 归一化。
+    /// 复数 IFFT（正指数，**不归一化**，与 realfft 一致）。
     pub fn dft_inplace(&mut self, re: &mut [f32], im: &mut [f32]) {
         let n = re.len();
         debug_assert_eq!(re.len(), im.len());
@@ -152,6 +152,34 @@ impl FftCache {
                 mixed_fft(re, im, 0, n, 1, radices, tw_re, tw_im, n, sre, sim);
             }
         }
+    }
+
+    /// 复数 DFT（负指数，不归一化）。
+    pub fn dft_forward(&mut self, re: &mut [f32], im: &mut [f32]) {
+        for v in im.iter_mut() {
+            *v = -*v;
+        }
+        self.dft_inplace(re, im);
+        for v in im.iter_mut() {
+            *v = -*v;
+        }
+    }
+
+    /// 实数 DFT：输入 n 个实数 → 半谱 `spec[0..=n/2]`（与 realfft 的 RealToComplex 同约定）。
+    pub fn forward_real(&mut self, input: &[f32], spec_re: &mut [f32], spec_im: &mut [f32]) {
+        let n = input.len();
+        debug_assert_eq!(spec_re.len(), n / 2 + 1);
+        let mut re = core::mem::take(&mut self.buf_re);
+        let mut im = core::mem::take(&mut self.buf_im);
+        re.clear();
+        re.extend_from_slice(input);
+        im.clear();
+        im.resize(n, 0.0);
+        self.dft_forward(&mut re, &mut im);
+        spec_re.copy_from_slice(&re[..n / 2 + 1]);
+        spec_im.copy_from_slice(&im[..n / 2 + 1]);
+        self.buf_re = re;
+        self.buf_im = im;
     }
 
     fn plan_index(&mut self, n: usize) -> usize {
@@ -513,5 +541,46 @@ mod tests {
             cache.dft_inplace(&mut re, &mut im);
         }
         assert_eq!(cache.plans.len(), 1);
+    }
+
+    #[test]
+    fn real_forward_inverse_roundtrip() {
+        let n = 128usize;
+        let mut cache = FftCache::new();
+        let mut rng = Random::with_seed(11);
+        let input: Vec<f32> = (0..n).map(|_| rng.get_uniform() * 2.0 - 1.0).collect();
+        let mut sr = vec![0.0f32; n / 2 + 1];
+        let mut si = vec![0.0f32; n / 2 + 1];
+        cache.forward_real(&input, &mut sr, &mut si);
+        let mut out = vec![0.0f32; n];
+        cache.inverse_real(&sr, &si, &mut out);
+        let scale = 1.0 / n as f32;
+        let max_err = input
+            .iter()
+            .zip(out.iter())
+            .fold(0.0f32, |m, (a, b)| m.max((a - b * scale).abs()));
+        assert!(max_err < 1e-5, "max_err={max_err}");
+    }
+
+    #[test]
+    fn real_forward_matches_naive() {
+        let n = 64usize;
+        let mut cache = FftCache::new();
+        let input: Vec<f32> = (0..n).map(|i| (i as f32 * 0.3).sin()).collect();
+        let mut sr = vec![0.0f32; n / 2 + 1];
+        let mut si = vec![0.0f32; n / 2 + 1];
+        cache.forward_real(&input, &mut sr, &mut si);
+        for k in 0..=n / 2 {
+            let mut er = 0.0f64;
+            let mut ei = 0.0f64;
+            for t in 0..n {
+                let a = -2.0 * std::f64::consts::PI * (k * t) as f64 / n as f64;
+                let (s, c) = a.sin_cos();
+                er += input[t] as f64 * c;
+                ei += input[t] as f64 * s;
+            }
+            assert!((sr[k] as f64 - er).abs() < 1e-3, "k={k} re");
+            assert!((si[k] as f64 - ei).abs() < 1e-3, "k={k} im");
+        }
     }
 }

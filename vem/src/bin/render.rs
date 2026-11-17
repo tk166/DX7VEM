@@ -195,6 +195,70 @@ fn main() {
         _ => 0,
     });
 
+    // 数据（琴体 IR / 弓噪）：--data <目录>，里面放 body-<instrument>.bin 与 noise.bin
+    let mut data_info = String::from("无");
+    if let Some(dir) = args.raw("data") {
+        let base = Path::new(dir);
+        let mut loaded = 0;
+        for name in [
+            format!("body-{}.bin", instrument.name()),
+            "noise.bin".to_string(),
+        ] {
+            let path = base.join(&name);
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    if engine.set_data(&bytes) {
+                        loaded += 1;
+                    } else {
+                        eprintln!("数据格式不正确: {}", path.display());
+                    }
+                }
+                Err(e) => eprintln!("读取失败 {}: {e}", path.display()),
+            }
+        }
+        data_info = format!("{dir} ({loaded} 个文件)");
+    }
+    if args.flag("no-body") {
+        engine.body_mix = 0.0;
+    }
+    if args.flag("no-noise") {
+        engine.bow_noise_mode = 0;
+    }
+    if let Some(v) = args.raw("body-mix") {
+        engine.body_mix = v.parse().unwrap_or(engine.body_mix);
+    }
+    if let Some(v) = args.raw("bow-noise") {
+        engine.bow_noise_amount = v.parse().unwrap_or(engine.bow_noise_amount);
+    }
+
+    // 总线（DX7 版参数）：默认关（保证与参考逐采样可对拍）；--bus 打开
+    let bus = args.flag("bus");
+    if bus {
+        engine.set_comp(
+            true,
+            args.f32("comp-thr", -12.0),
+            args.f32("comp-ratio", 2.0),
+            args.f32("comp-atk", 15.0),
+            args.f32("comp-rel", 200.0),
+            args.f32("comp-makeup", 1.0),
+        );
+        engine.set_reverb(
+            args.f32("rev-mix", 0.25),
+            args.f32("rev-size", 0.6),
+            args.f32("rev-damp", 0.45),
+            args.f32("rev-width", 1.0),
+        );
+        engine.safe_clip = true;
+    }
+    if let Some(v) = args.raw("rev-mix") {
+        engine.set_reverb(
+            v.parse().unwrap_or(0.25),
+            args.f32("rev-size", 0.6),
+            args.f32("rev-damp", 0.45),
+            args.f32("rev-width", 1.0),
+        );
+    }
+
     let total = ((dur + tail) * sample_rate).round() as usize;
     let note_off_at = (dur * sample_rate).round() as usize;
     let mut left = vec![0.0f32; total];
@@ -276,6 +340,14 @@ fn main() {
         engine.control_samples(),
         engine.envelope.attack_samples(velocity, sample_rate),
         engine.envelope.release_samples(engine.release_rate, sample_rate)
+    );
+    println!(
+        "  body={:.2} (ir={})  bow_noise={:.2} (mode={})  data={}",
+        engine.body_mix,
+        if engine.body.is_ready() { "有" } else { "无" },
+        engine.bow_noise_amount,
+        engine.bow_noise_mode,
+        data_info
     );
 
     if pcm16 {

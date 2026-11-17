@@ -1,0 +1,10 @@
+[package]
+name = "vem-gen-data"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# 开发期工具：把参考实现的 FLAC 转成 VEMD blob（不进 wasm、不进交付）
+[dependencies]
+claxon = "0.4.3"
+vem = { path = "../.." }

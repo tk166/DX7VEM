@@ -6,10 +6,15 @@
 //! 逐窗口（甚至逐采样）对拍。
 
 use crate::articulations::Articulation;
+use crate::body::BodyConvolver;
+use crate::comp::Compressor;
+use crate::data::VemData;
 use crate::envelope::EnvelopeParams;
 use crate::fft::FftCache;
 use crate::instrument::{Instrument, InstrumentType};
+use crate::noise::NoisePlayhead;
 use crate::random::Random;
+use crate::reverb::Freeverb;
 use crate::smooth::{block_coef, smooth_to, soft_clip};
 use crate::spectrum::{coef_for, TimbreParams};
 
@@ -92,6 +97,7 @@ pub struct Voice {
     tremolo_down_bow: bool,
     peak: f32,
     silence_ticks: u32,
+    noise: NoisePlayhead,
 }
 
 impl Voice {
@@ -116,6 +122,7 @@ impl Voice {
             tremolo_down_bow: true,
             peak: 0.0,
             silence_ticks: 0,
+            noise: NoisePlayhead::new(sr),
         }
     }
 
@@ -197,6 +204,7 @@ impl Voice {
         self.inst.set_timbre(timbre);
         self.inst.set_frequency(self.freq * ctx.bend);
         self.inst.note_on(note, articulation);
+        self.noise.tune(self.freq, ctx.sr);
 
         match articulation {
             Articulation::Arco | Articulation::Glissando => {
@@ -484,6 +492,15 @@ pub struct Engine {
     pub seed: u32,
     pub body_mix: f32,
     pub body_size: f32,
+    pub body: BodyConvolver,
+    pub noise_samples: Vec<f32>,
+    pub noise_type_scale: f32,
+    noise_anchor: f32,
+    pub comp: Compressor,
+    pub reverb: Freeverb,
+    rev_mix_target: f32,
+    rev_mix_cur: f32,
+    master_cur: f32,
     pub reverb_mix: f32,
     pub comp_on: bool,
     pub bow_noise_mode: i32,
@@ -525,18 +542,27 @@ impl Engine {
             oversample,
             oversample_mode: 0,
             seed: DEFAULT_SEED,
-            body_mix: 0.18,
+            body_mix: coef_for(instrument_type).body_mix,
             body_size: 0.6,
+            body: BodyConvolver::new(),
+            noise_samples: Vec::new(),
+            noise_type_scale: coef_for(instrument_type).bow_noise_scale,
+            noise_anchor: 0.5,
+            comp: Compressor::new(),
+            reverb: Freeverb::new(sample_rate),
+            rev_mix_target: 0.0,
+            rev_mix_cur: 0.0,
+            master_cur: 1.0,
             reverb_mix: 0.0,
             comp_on: false,
-            bow_noise_mode: 0,
+            bow_noise_mode: 1,
             bow_noise_amount: 0.5,
             rng: Random::with_seed(DEFAULT_SEED),
         };
         e.rebuild_voices();
         // 与参考实现 Division 的随机序列对齐：初始化时先取一次 uniform（分配噪声起点用）
         e.rng.reset(e.seed);
-        e.rng.get_uniform();
+        e.noise_anchor = e.rng.get_uniform();
         e
     }
 
@@ -546,6 +572,38 @@ impl Engine {
         let ov = self.oversample;
         let seed = self.seed;
         self.voices = core::array::from_fn(|i| Voice::new(i, sr, it, ov, seed));
+        self.apply_noise_positions();
+    }
+
+    fn apply_noise_positions(&mut self) {
+        let len = self.noise_samples.len();
+        if len == 0 {
+            return;
+        }
+        let count = if self.polyphonic {
+            MAX_VOICES as f32
+        } else {
+            1.0
+        };
+        for (i, v) in self.voices.iter_mut().enumerate() {
+            let pos = (len as f32 * (i as f32 + 0.5 * self.noise_anchor) / count) as usize;
+            v.noise.position = pos.min(len - 1);
+        }
+    }
+
+    /// 载入琴体 IR / 弓噪数据（`VEMD` 容器，见 `data.rs`）。
+    pub fn set_data(&mut self, blob: &[u8]) -> bool {
+        let Some(data) = VemData::parse(blob) else {
+            return false;
+        };
+        if !data.body.is_empty() {
+            self.body.set_ir(&data.body, &mut self.fft);
+        }
+        if !data.noise.is_empty() {
+            self.noise_samples = data.noise;
+            self.apply_noise_positions();
+        }
+        true
     }
 
     pub fn reset(&mut self) {
@@ -553,7 +611,8 @@ impl Engine {
         self.next_age = 0;
         self.gain = 1.0;
         self.rng.reset(self.seed);
-        self.rng.get_uniform();
+        self.noise_anchor = self.rng.get_uniform();
+        self.body.clear();
         self.rebuild_voices();
     }
 
@@ -677,6 +736,24 @@ impl Engine {
         self.gain_target = gain.max(0.0);
     }
 
+    /// 总线混响参数（mix 0..1 / size 0..1 / damp 0..1 / width 0..1）。
+    pub fn set_reverb(&mut self, mix: f32, size: f32, damp: f32, width: f32) {
+        self.rev_mix_target = mix.clamp(0.0, 1.0);
+        self.reverb_mix = self.rev_mix_target;
+        self.reverb.set_params(size, damp, width);
+    }
+
+    /// 总线压缩参数（threshold dB / ratio / attack ms / release ms / makeup dB）。
+    pub fn set_comp(&mut self, enabled: bool, thr: f32, ratio: f32, atk: f32, rel: f32, makeup: f32) {
+        self.comp_on = enabled;
+        if enabled {
+            self.comp
+                .set_params(thr, ratio, atk, rel, makeup, self.sample_rate);
+        } else {
+            self.comp.enabled = false;
+        }
+    }
+
     pub fn render(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
         let frames = out_l.len().min(out_r.len());
         let mut base = 0;
@@ -690,12 +767,28 @@ impl Engine {
     fn render_block(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
         let n = out_l.len();
         self.gain = smooth_to(self.gain, self.gain_target, self.gain_coef);
-        let amp = self.gain * self.master * self.output_gain;
+        let amp = self.gain * self.output_gain;
+        let mut bl = [0.0f32; BLOCK];
+        let mut br = [0.0f32; BLOCK];
         let control = self.control_samples;
         let ctx = self.ctx();
         let env = self.envelope;
+        let noise_len = self.noise_samples.len();
+        let noise_active = noise_len > 0 && self.bow_noise_mode != 0;
+        let noise_scale = if noise_active {
+            match self.articulation {
+                Articulation::ColLegno => self.noise_type_scale,
+                Articulation::Tremolo => 1.5 * self.noise_type_scale * self.bow_noise_amount,
+                _ => self.noise_type_scale * self.bow_noise_amount,
+            }
+        } else {
+            0.0
+        };
+        let body_ready = self.body.is_ready();
+        let body_mix = self.body_mix;
         let fft = &mut self.fft;
         let rng = &mut self.rng;
+        let noise_samples = &self.noise_samples;
         for i in 0..n {
             self.step += 1;
             if self.step % control == 0 {
@@ -714,20 +807,71 @@ impl Engine {
                             continue;
                         }
                     }
-                    let s = v.inst.generate(fft);
-                    let a = s.abs();
+                    let mut sig = v.inst.generate(fft);
+                    if noise_active {
+                        let mut nz =
+                            noise_scale * v.inst.get_volume() * noise_samples[v.noise.position];
+                        nz += 5e-5 * v.freq * v.noise.filter.process(nz);
+                        v.noise.position += 1;
+                        if v.noise.position >= noise_len {
+                            v.noise.position = 0;
+                        }
+                        sig += nz;
+                    }
+                    let a = sig.abs();
                     if a > v.peak {
                         v.peak = a;
                     }
-                    sum += s;
+                    sum += sig;
                 }
             }
-            let mut s = sum * amp;
-            if self.safe_clip {
-                s = soft_clip(s);
+            let body_out = if body_ready {
+                self.body.process(sum, fft)
+            } else {
+                0.0
+            };
+            bl[i] = (sum + body_mix * body_out) * amp;
+            br[i] = bl[i];
+        }
+        self.apply_bus(&mut bl[..n], &mut br[..n]);
+        out_l[..n].copy_from_slice(&bl[..n]);
+        out_r[..n].copy_from_slice(&br[..n]);
+    }
+
+    /// 总线：压缩 → 混响（干湿混合）→ 主音量 → 软限幅。
+    fn apply_bus(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let n = l.len();
+        if self.comp.enabled {
+            for i in 0..n {
+                let (a, b) = self.comp.process(l[i], r[i]);
+                l[i] = a;
+                r[i] = b;
             }
-            out_l[i] = s;
-            out_r[i] = s;
+        }
+        self.rev_mix_cur = smooth_to(self.rev_mix_cur, self.rev_mix_target, self.gain_coef);
+        if self.rev_mix_cur > 0.0001 {
+            let mut wl = [0.0f32; BLOCK];
+            let mut wr = [0.0f32; BLOCK];
+            wl[..n].copy_from_slice(&l[..n]);
+            wr[..n].copy_from_slice(&r[..n]);
+            self.reverb.process_block(&mut wl[..n], &mut wr[..n]);
+            let dry = 1.0 - 0.35 * self.rev_mix_cur;
+            for i in 0..n {
+                l[i] = l[i] * dry + wl[i] * self.rev_mix_cur * 3.0;
+                r[i] = r[i] * dry + wr[i] * self.rev_mix_cur * 3.0;
+            }
+        }
+        self.master_cur = smooth_to(self.master_cur, self.master, self.gain_coef);
+        for i in 0..n {
+            let a = l[i] * self.master_cur;
+            let b = r[i] * self.master_cur;
+            if self.safe_clip {
+                l[i] = soft_clip(a);
+                r[i] = soft_clip(b);
+            } else {
+                l[i] = a;
+                r[i] = b;
+            }
         }
     }
 }
