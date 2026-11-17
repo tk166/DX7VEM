@@ -1,14 +1,20 @@
 //! 琴体：短 IR 卷积。
 //!
-//! 结构与参考实现一致（`synth/src/reverb.rs`）：
-//! - IR 前 16 个 tap 直接时域卷积（零延迟）；
-//! - 其余部分按 2 倍递增的分块做 FFT 卷积，结果加到一个环形输出缓冲的"未来"位置。
+//! 结构（与参考实现等价，但把"大 FFT 尖峰"拆掉了）：
+//! - IR 前 16 个 tap：直接时域卷积（零延迟）；
+//! - 16..512：2 倍递增的分块 FFT（和参考一样，小块、便宜）；
+//! - 512 以后：**均匀分块 + 频域延迟线（FDL）**。因为这段 IR 本身有 512 采样的延迟，
+//!   尾部结果晚一个块输出正好抵消 → 整体仍是零延迟、同一个线性卷积。
 //!
-//! 这样既保持 0 采样延迟，又能和参考实现逐采样对齐（同一线性卷积，只有舍入差）。
+//! 旧版对尾巴用 32768 点的大 FFT，每隔 8192/16384 采样会在单个 64 采样块里爆一次，
+//! 在 Safari 的 WebAssembly 上直接造成 ~185 ms 周期的卡顿；改成均匀分块后每块工作量恒定。
 
 use crate::fft::FftCache;
 
 const DIRECT_TAPS: usize = 16;
+const BLOCK: usize = 512; // 尾部均匀分块长度（= 延迟补偿量）
+const N: usize = 2 * BLOCK; // overlap-save 窗长
+const BINS: usize = N / 2 + 1;
 
 struct Block {
     width: usize,
@@ -29,6 +35,20 @@ pub struct BodyConvolver {
     spec_re: Vec<f32>,
     spec_im: Vec<f32>,
     block_out: Vec<f32>,
+
+    // 尾部均匀分块（FDL）
+    tail_parts: usize,
+    tail_h_re: Vec<f32>, // [part][BINS]
+    tail_h_im: Vec<f32>,
+    tail_x_re: Vec<f32>, // [part][BINS] 输入谱历史（环形）
+    tail_x_im: Vec<f32>,
+    tail_y_re: Vec<f32>, // 累加谱
+    tail_y_im: Vec<f32>,
+    tail_time: Vec<f32>, // 2B 时域缓冲
+    tail_buf: Vec<f32>,  // 当前待输出的 B 个尾部样本
+    tail_pos: usize,
+    tail_ready: bool,
+    tail_seen: usize, // 已经处理过多少个输入块（用于环形历史）
 }
 
 impl BodyConvolver {
@@ -45,6 +65,18 @@ impl BodyConvolver {
             spec_re: Vec::new(),
             spec_im: Vec::new(),
             block_out: Vec::new(),
+            tail_parts: 0,
+            tail_h_re: Vec::new(),
+            tail_h_im: Vec::new(),
+            tail_x_re: Vec::new(),
+            tail_x_im: Vec::new(),
+            tail_y_re: Vec::new(),
+            tail_y_im: Vec::new(),
+            tail_time: Vec::new(),
+            tail_buf: Vec::new(),
+            tail_pos: 0,
+            tail_ready: false,
+            tail_seen: 0,
         }
     }
 
@@ -56,25 +88,34 @@ impl BodyConvolver {
         self.input_ring.fill(0.0);
         self.output_ring.fill(0.0);
         self.position = 0;
+        self.tail_x_re.fill(0.0);
+        self.tail_x_im.fill(0.0);
+        self.tail_buf.fill(0.0);
+        self.tail_pos = 0;
+        self.tail_ready = false;
+        self.tail_seen = 0;
     }
 
-    /// 设置 IR（单声道，48 kHz）。长度会被补零到 2 的幂。
+    /// 设置 IR（单声道，48 kHz）。
     pub fn set_ir(&mut self, ir: &[f32], fft: &mut FftCache) {
         if ir.is_empty() {
             self.ready = false;
             return;
         }
-        let mut width = 1usize;
-        while width < ir.len() {
-            width *= 2;
-        }
         let mut padded = ir.to_vec();
-        padded.resize(width, 0.0);
-
-        let direct_width = DIRECT_TAPS.min(width);
+        // 头部（直接/倍增分块）覆盖到 512；更短的 IR 用 2 的幂封口，避免漏掉最后一小段
+        let head_len = if ir.len() <= BLOCK {
+            ir.len().next_power_of_two().max(2 * DIRECT_TAPS).min(BLOCK)
+        } else {
+            BLOCK
+        };
+        if padded.len() < head_len {
+            padded.resize(head_len, 0.0);
+        }
+        let direct_width = DIRECT_TAPS.min(head_len);
         let mut blocks = Vec::new();
         let mut bw = 2 * direct_width;
-        while bw <= width {
+        while bw <= head_len {
             let half = bw / 2;
             let bins = bw / 2 + 1;
             let mut tmp = vec![0.0f32; bw];
@@ -91,16 +132,60 @@ impl BodyConvolver {
             bw *= 2;
         }
 
-        self.mask = 2 * width - 1;
-        self.input_ring = vec![0.0; 2 * width];
-        self.output_ring = vec![0.0; 2 * width];
+        // 环形缓冲只需覆盖倍增分块的最大宽度
+        let ring_width = (2 * BLOCK).max(2 * direct_width);
+        self.mask = ring_width - 1;
+        self.input_ring = vec![0.0; ring_width];
+        self.output_ring = vec![0.0; ring_width];
         self.position = 0;
         self.direct = padded[..direct_width].to_vec();
         self.blocks = blocks;
-        self.real_tmp = vec![0.0; 2 * width];
-        self.spec_re = vec![0.0; width / 2 + 1];
-        self.spec_im = vec![0.0; width / 2 + 1];
-        self.block_out = vec![0.0; width];
+        self.real_tmp = vec![0.0; ring_width];
+        self.spec_re = vec![0.0; ring_width / 2 + 1];
+        self.spec_im = vec![0.0; ring_width / 2 + 1];
+        self.block_out = vec![0.0; ring_width];
+
+        // FDL 尾巴
+        let tail_start = head_len;
+        if padded.len() > tail_start {
+            let tail_len = padded.len() - tail_start;
+            let parts = (tail_len + BLOCK - 1) / BLOCK;
+            self.tail_parts = parts;
+            self.tail_h_re = vec![0.0; parts * BINS];
+            self.tail_h_im = vec![0.0; parts * BINS];
+            self.tail_x_re = vec![0.0; parts * BINS];
+            self.tail_x_im = vec![0.0; parts * BINS];
+            self.tail_y_re = vec![0.0; BINS];
+            self.tail_y_im = vec![0.0; BINS];
+            self.tail_time = vec![0.0; N];
+            self.tail_buf = vec![0.0; BLOCK];
+            for p in 0..parts {
+                let mut tmp = vec![0.0f32; N];
+                let start = tail_start + p * BLOCK;
+                let end = (start + BLOCK).min(padded.len());
+                let len = end - start;
+                tmp[..len].copy_from_slice(&padded[start..end]);
+                let mut hr = vec![0.0f32; BINS];
+                let mut hi = vec![0.0f32; BINS];
+                fft.forward_real(&tmp, &mut hr, &mut hi);
+                self.tail_h_re[p * BINS..(p + 1) * BINS].copy_from_slice(&hr);
+                self.tail_h_im[p * BINS..(p + 1) * BINS].copy_from_slice(&hi);
+            }
+            self.tail_seen = 0;
+            self.tail_pos = 0;
+            self.tail_ready = false;
+        } else {
+            self.tail_parts = 0;
+            self.tail_h_re.clear();
+            self.tail_h_im.clear();
+            self.tail_x_re.clear();
+            self.tail_x_im.clear();
+            self.tail_y_re.clear();
+            self.tail_y_im.clear();
+            self.tail_time.clear();
+            self.tail_buf.clear();
+        }
+        padded.clear();
         self.ready = true;
     }
 
@@ -117,7 +202,7 @@ impl BodyConvolver {
             self.output_ring[(self.position + i) & mask] += input * self.direct[i];
         }
 
-        // 倍增分块 FFT
+        // 16..512：倍增分块 FFT（小块，便宜）
         for bi in 0..self.blocks.len() {
             let (width, half) = {
                 let b = &self.blocks[bi];
@@ -159,10 +244,75 @@ impl BodyConvolver {
             }
         }
 
-        let result = self.output_ring[self.position];
+        let mut result = self.output_ring[self.position];
+
+        // 尾巴：每 512 采样算一次，下一个块按采样输出（延迟 512 = IR 尾本身的延迟）
+        if self.tail_ready {
+            result += self.tail_buf[self.tail_pos];
+            self.tail_pos += 1;
+            if self.tail_pos >= BLOCK {
+                self.tail_pos = 0;
+                self.tail_ready = false;
+            }
+        }
+
         self.output_ring[self.position] = 0.0;
         self.position = (self.position + 1) & mask;
+
+        if self.tail_parts > 0 && self.position % BLOCK == 0 {
+            self.compute_tail(fft);
+        }
+
         result
+    }
+
+    /// 处理一个 512 采样的输入块：算输入谱、乘所有 IR 分块、IFFT，存到下一块的输出缓冲。
+    fn compute_tail(&mut self, fft: &mut FftCache) {
+        let parts = self.tail_parts;
+        if parts == 0 {
+            return;
+        }
+        let mask = self.mask;
+        // 窗：最近 N 个采样（= 上一块 + 当前块）；position 已前进到下一块开头
+        for i in 0..N {
+            self.tail_time[i] = self.input_ring[(self.position + i) & mask];
+        }
+        fft.forward_real(&self.tail_time, &mut self.tail_y_re[..], &mut self.tail_y_im[..]);
+
+        // 存入输入谱历史（环形）
+        let slot = self.tail_seen % parts;
+        let off = slot * BINS;
+        self.tail_x_re[off..off + BINS].copy_from_slice(&self.tail_y_re);
+        self.tail_x_im[off..off + BINS].copy_from_slice(&self.tail_y_im);
+
+        // 累加：Y += H_p * X_{k-p}
+        for i in 0..BINS {
+            let mut sr = 0.0f32;
+            let mut si = 0.0f32;
+            for p in 0..parts {
+                let xs = (self.tail_seen + parts - p) % parts;
+                let xo = xs * BINS;
+                let ho = p * BINS;
+                let xr = self.tail_x_re[xo + i];
+                let xi = self.tail_x_im[xo + i];
+                let hr = self.tail_h_re[ho + i];
+                let hi = self.tail_h_im[ho + i];
+                sr += xr * hr - xi * hi;
+                si += xr * hi + xi * hr;
+            }
+            self.tail_y_re[i] = sr;
+            self.tail_y_im[i] = si;
+        }
+        self.tail_seen += 1;
+
+        fft.inverse_real(&self.tail_y_re, &self.tail_y_im, &mut self.tail_time);
+        let scale = 1.0 / N as f32;
+        // overlap-save 的有效输出是第二半
+        for i in 0..BLOCK {
+            self.tail_buf[i] = self.tail_time[BLOCK + i] * scale;
+        }
+        self.tail_pos = 0;
+        self.tail_ready = true;
     }
 }
 
@@ -177,9 +327,8 @@ mod tests {
     use super::*;
     use crate::random::Random;
 
-    /// 与朴素线性卷积逐点对比（IR 足够短，直接卷积可算）。
     #[test]
-    fn matches_direct_convolution() {
+    fn matches_direct_convolution_short() {
         let mut rng = Random::with_seed(2024);
         let ir: Vec<f32> = (0..300).map(|_| rng.get_uniform() * 2.0 - 1.0).collect();
         let input: Vec<f32> = (0..800).map(|_| rng.get_uniform() * 2.0 - 1.0).collect();
@@ -202,19 +351,25 @@ mod tests {
     }
 
     #[test]
-    fn long_ir_does_not_blow_up() {
-        let mut rng = Random::with_seed(9);
-        let ir: Vec<f32> = (0..40000).map(|_| (rng.get_uniform() - 0.5) * 1e-3).collect();
+    fn matches_direct_convolution_long() {
+        let mut rng = Random::with_seed(7);
+        let ir: Vec<f32> = (0..3000).map(|_| rng.get_uniform() * 2.0 - 1.0).collect();
+        let input: Vec<f32> = (0..2500).map(|_| rng.get_uniform() * 2.0 - 1.0).collect();
         let mut fft = FftCache::new();
         let mut conv = BodyConvolver::new();
         conv.set_ir(&ir, &mut fft);
-        let mut peak = 0.0f32;
-        for i in 0..48000 {
-            let x = ((i as f32) * 0.01).sin() * 0.5;
-            let y = conv.process(x, &mut fft);
-            assert!(y.is_finite());
-            peak = peak.max(y.abs());
+        for (n, &x) in input.iter().enumerate() {
+            let got = conv.process(x, &mut fft);
+            let mut expect = 0.0f64;
+            for (k, &h) in ir.iter().enumerate() {
+                if n >= k {
+                    expect += (input[n - k] * h) as f64;
+                }
+            }
+            assert!(
+                (got as f64 - expect).abs() < 5e-3,
+                "n={n} got={got} expect={expect}"
+            );
         }
-        assert!(peak < 10.0, "peak={peak}");
     }
 }

@@ -32,6 +32,20 @@ class MsfaProcessor extends AudioWorkletProcessor {
     this.lastLevelReport = 0;
     this.fade = 0;
     this.vemEngines = null;
+    this.vemAccL = new Float32Array(BLOCK);
+    this.vemAccR = new Float32Array(BLOCK);
+    this._views = new Map();
+  }
+
+  /// 缓存 WASM 内存的 Float32 视图（Safari 上每块都 new 会造成 GC 抖动）
+  view(E, ptr, len) {
+    const key = ptr + ":" + len;
+    let v = this._views.get(key);
+    if (!v || v.buffer !== E.memory.buffer) {
+      v = new Float32Array(E.memory.buffer, ptr, len);
+      this._views.set(key, v);
+    }
+    return v;
   }
 
   onMessage(msg) {
@@ -416,17 +430,19 @@ class MsfaProcessor extends AudioWorkletProcessor {
       }
 
       this.E._msfa_mixer_render(this.mixer, this.outL, this.outR, BLOCK);
-      const sl = new Float32Array(this.E.memory.buffer, this.outL, BLOCK);
-      const sr = new Float32Array(this.E.memory.buffer, this.outR, BLOCK);
+      const sl = this.view(this.E, this.outL, BLOCK);
+      const sr = this.view(this.E, this.outR, BLOCK);
 
       let vl = null, vr = null;
       if (this.vemEngines && this.vemEngines.length) {
-        vl = new Float32Array(BLOCK);
-        vr = new Float32Array(BLOCK);
+        vl = this.vemAccL;
+        vr = this.vemAccR;
+        vl.fill(0);
+        vr.fill(0);
         for (const e of this.vemEngines) {
           e.E.vem_render(e.eng, this.vemL, this.vemR, BLOCK);
-          const el = new Float32Array(e.E.memory.buffer, this.vemL, BLOCK);
-          const er = new Float32Array(e.E.memory.buffer, this.vemR, BLOCK);
+          const el = this.view(e.E, this.vemL, BLOCK);
+          const er = this.view(e.E, this.vemR, BLOCK);
           for (let i = 0; i < BLOCK; i++) {
             vl[i] += el[i];
             vr[i] += er[i];
