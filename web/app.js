@@ -257,6 +257,8 @@ function buildVemUI() {
     addVemRow(panel, idx, "vibrato", "揉弦深度", 0, 1.5, 0.01, p.vibrato ?? 0.4, (v) => v.toFixed(2));
     addVemRow(panel, idx, "vibOnsetMs", "揉弦渐入", 0, 500, 10, p.vibOnsetMs ?? 120, (v) => `${v} ms`);
     addVemRow(panel, idx, "attackMs", "起音", 2, 300, 1, p.attackMs ?? 8, (v) => `${v} ms`);
+    addVemRow(panel, idx, "accent", "音头重音", 0, 0.3, 0.01, p.accent ?? 0, (v) => v.toFixed(2));
+    addVemRow(panel, idx, "taper", "换音渐弱", 0, 0.4, 0.01, p.taper ?? 0, (v) => v.toFixed(2));
     addVemRow(panel, idx, "legatoStart", "连弓接续", 0, 1, 0.01, p.legatoStart ?? 0.5, (v) => v.toFixed(2));
     addVemRow(panel, idx, "legatoRampMs", "换音过渡", 0, 100, 1, p.legatoRampMs ?? 0, (v) => `${v} ms`);
     addVemRow(panel, idx, "legatoBoost", "换音补偿", 0, 8, 0.1, p.legatoBoost ?? 0, (v) => v.toFixed(1));

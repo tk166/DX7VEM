@@ -178,6 +178,11 @@ fn main() {
     engine.envelope.legato_accent = args.f32("legato-accent", 0.0).clamp(0.0, 0.2);
     engine.envelope.legato_boost = args.f32("legato-boost", 0.0).clamp(0.0, 8.0);
     engine.envelope.legato_boost_ms = args.f32("legato-boost-ms", 25.0).clamp(1.0, 200.0);
+    engine.envelope.accent = args.f32("accent", 0.0).clamp(0.0, 0.5);
+    engine.envelope.accent_ms = args.f32("accent-ms", 45.0).clamp(5.0, 300.0);
+    engine.envelope.body_ms = args.f32("body-ms", 120.0).clamp(0.0, 600.0);
+    engine.envelope.taper = args.f32("taper", 0.0).clamp(0.0, 0.6);
+    engine.envelope.taper_ms = args.f32("taper-ms", 130.0).clamp(10.0, 600.0);
 
     let mut timbre = TimbreParams::default();
     timbre.damping_scale = args.f32("damping", 1.0);
@@ -191,6 +196,21 @@ fn main() {
     if raw {
         engine.output_gain = 1.0;
         engine.safe_clip = false;
+    }
+
+    // 测试分句包络：--lead-ms 表示"到下一个音还有多久"（只作用于第一个音）
+    if let Some(v) = args.raw("lead-ms") {
+        let lead_ms: f32 = v.parse().unwrap_or(0.0);
+        if lead_ms > 0.0 {
+            engine.set_expr(vem::NoteExpr {
+                bow,
+                pressure: 1.0,
+                vibrato,
+                attack_ms: engine.envelope.accent_ms,
+                detune_cents: 0.0,
+                lead_ms,
+            });
+        }
     }
 
     let ov = args.string("oversample", "auto");

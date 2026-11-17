@@ -244,6 +244,18 @@ class MsfaProcessor extends AudioWorkletProcessor {
       this.evData[i * 4 + 3] = dv.getUint8(o + 7);
     }
     this.eventCount = n;
+    // 每个 note-on 到"同通道下一个 note-on"的时间（ms），用于换音前渐弱
+    this.leadMs = new Float32Array(n);
+    const nextOn = new Array(16).fill(-1);
+    for (let i = n - 1; i >= 0; i--) {
+      const ch = this.evData[i * 4];
+      const isOn = this.evData[i * 4 + 3];
+      const t = this.events[i * 2];
+      if (isOn) {
+        this.leadMs[i] = nextOn[ch] >= 0 ? (nextOn[ch] - t) * 1000 : 0;
+        nextOn[ch] = t;
+      }
+    }
   }
 
   /** 替换事件（humanize 参数变化时），保留播放位置，但重置发声状态避免卡音。 */
@@ -298,6 +310,7 @@ class MsfaProcessor extends AudioWorkletProcessor {
     call(E.vem_set_body, eng, p.bodyMix, 0.6);
     call(E.vem_set_bow_noise, eng, p.bowNoiseOn === 0 ? 0 : 1, p.bowNoise);
     call(E.vem_set_legato, eng, p.legatoStart ?? 0.5, p.legatoRampMs ?? 0, p.legatoAccent ?? 0, p.legatoBoost ?? 0, p.legatoBoostMs ?? 25);
+    call(E.vem_set_phrase, eng, p.accent ?? 0, p.accentMs ?? 45, p.bodyMs ?? 120, p.taper ?? 0, p.taperMs ?? 130);
   }
 
   // 把 FX 参数下发给 wasm（bypass 时全部旁通）
@@ -384,7 +397,8 @@ class MsfaProcessor extends AudioWorkletProcessor {
                   const vib = Math.max(0, (p.vibrato ?? 0.4) * this.exprs[b + 1]);
                   const press = Math.max(0.2, (p.pressure ?? 1) * this.exprs[b + 2]);
                   const atk = Math.max(1, (p.attackMs ?? 8) * this.exprs[b + 3]);
-                  e.E.vem_set_expr(e.eng, bow, press, vib, atk, this.exprs[b + 4]);
+                  const lead = this.leadMs ? this.leadMs[idx] : 0;
+                  e.E.vem_set_expr(e.eng, bow, press, vib, atk, this.exprs[b + 4], lead);
                 } else if (!this.exprWarned) {
                   this.exprWarned = true;
                   this.port.postMessage({ type: "warn", message: "vem.wasm 缺少 vem_set_expr（需要重新 build-wasm）" });

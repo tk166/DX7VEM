@@ -14,7 +14,7 @@
       "pressure": 1,
       "vibrato": 0.7,
       "vibratoRate": 5.2,
-      "attackMs": 141,
+      "attackMs": 45,
       "attackVelMs": 60,
       "releaseMs": 60,
       "releaseSlowMs": 120,
@@ -24,11 +24,16 @@
       "bodyMix": 0.21,
       "bowNoise": 0.5,
       "bowNoiseOn": 1,
-      "legatoStart": 0.95,
-      "legatoRampMs": 15,
+      "legatoStart": 1,
+      "legatoRampMs": 0,
       "legatoAccent": 0,
       "legatoBoost": 0,
-      "legatoBoostMs": 15
+      "legatoBoostMs": 15,
+      "accent": 0.1,
+      "accentMs": 45,
+      "bodyMs": 120,
+      "taper": 0.18,
+      "taperMs": 130
     }
   },
   {
@@ -46,7 +51,7 @@
       "pressure": 1,
       "vibrato": 0.7,
       "vibratoRate": 5.2,
-      "attackMs": 141,
+      "attackMs": 45,
       "attackVelMs": 60,
       "releaseMs": 60,
       "releaseSlowMs": 120,
@@ -56,11 +61,16 @@
       "bodyMix": 0.21,
       "bowNoise": 0.5,
       "bowNoiseOn": 1,
-      "legatoStart": 0.95,
-      "legatoRampMs": 15,
+      "legatoStart": 1,
+      "legatoRampMs": 0,
       "legatoAccent": 0,
       "legatoBoost": 0,
-      "legatoBoostMs": 15
+      "legatoBoostMs": 15,
+      "accent": 0.08,
+      "accentMs": 45,
+      "bodyMs": 120,
+      "taper": 0.15,
+      "taperMs": 130
     }
   },
   {
@@ -78,7 +88,7 @@
       "pressure": 1,
       "vibrato": 0.7,
       "vibratoRate": 5.2,
-      "attackMs": 141,
+      "attackMs": 45,
       "attackVelMs": 60,
       "releaseMs": 60,
       "releaseSlowMs": 120,
@@ -88,11 +98,16 @@
       "bodyMix": 0.21,
       "bowNoise": 0.5,
       "bowNoiseOn": 1,
-      "legatoStart": 0.95,
-      "legatoRampMs": 15,
+      "legatoStart": 1,
+      "legatoRampMs": 0,
       "legatoAccent": 0,
       "legatoBoost": 0,
-      "legatoBoostMs": 15
+      "legatoBoostMs": 15,
+      "accent": 0.08,
+      "accentMs": 45,
+      "bodyMs": 120,
+      "taper": 0.15,
+      "taperMs": 130
     }
   },
   {
@@ -110,7 +125,7 @@
       "pressure": 1,
       "vibrato": 0.7,
       "vibratoRate": 5.2,
-      "attackMs": 141,
+      "attackMs": 45,
       "attackVelMs": 60,
       "releaseMs": 60,
       "releaseSlowMs": 120,
@@ -120,11 +135,16 @@
       "bodyMix": 0.21,
       "bowNoise": 0.5,
       "bowNoiseOn": 1,
-      "legatoStart": 0.95,
-      "legatoRampMs": 15,
+      "legatoStart": 1,
+      "legatoRampMs": 0,
       "legatoAccent": 0,
       "legatoBoost": 0,
-      "legatoBoostMs": 15
+      "legatoBoostMs": 15,
+      "accent": 0.06,
+      "accentMs": 45,
+      "bodyMs": 120,
+      "taper": 0.12,
+      "taperMs": 130
     }
   }
 ]

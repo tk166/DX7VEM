@@ -29,6 +29,16 @@ pub struct EnvelopeParams {
     pub legato_boost: f32,
     /// 激励补偿的衰减时间（ms）
     pub legato_boost_ms: f32,
+    /// 音头重音（0 = 关；0.1 ≈ +0.8 dB）
+    pub accent: f32,
+    /// 音头到达峰值的时间（ms）
+    pub accent_ms: f32,
+    /// 音头回落到 1 的时间（ms）
+    pub body_ms: f32,
+    /// 换音前的自然渐弱（0 = 关；0.18 ≈ -1.7 dB）
+    pub taper: f32,
+    /// 渐弱持续时间（ms，结束于下一个音）
+    pub taper_ms: f32,
 }
 
 impl Default for EnvelopeParams {
@@ -47,6 +57,11 @@ impl Default for EnvelopeParams {
             legato_accent: 0.0,
             legato_boost: 0.0,
             legato_boost_ms: 25.0,
+            accent: 0.0,
+            accent_ms: 45.0,
+            body_ms: 120.0,
+            taper: 0.0,
+            taper_ms: 130.0,
         }
     }
 }

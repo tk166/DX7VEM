@@ -216,6 +216,7 @@ function applyVemParams(eng, entry, idx) {
     p.legatoBoost ?? 0,
     p.legatoBoostMs ?? 25
   );
+  vem.vem_set_phrase(eng, p.accent ?? 0, p.accentMs ?? 45, p.bodyMs ?? 120, p.taper ?? 0, p.taperMs ?? 130);
   const explicit = ["--attack-ms", "--attack-vel-ms", "--release-ms", "--release-slow-ms", "--bow-settle-ms", "--vib-onset-ms"].some((k) => argv.includes(k));
   if (p.attackMs !== undefined && !explicit) {
     vem.vem_set_envelope(
@@ -280,10 +281,20 @@ function renderEngine(engine) {
   const outR = vem.vem_alloc(BLOCK * 4);
   const mono = new Float32Array(frames);
   const ev = engineEvents(engine.entry);
+  // 每个 note-on 到同引擎下一个 note-on 的时间（ms）
+  const lead = new Float32Array(ev.length);
+  let nextOn = -1;
+  for (let i = ev.length - 1; i >= 0; i--) {
+    if (ev[i].on) {
+      lead[i] = nextOn >= 0 ? (nextOn - ev[i].t) * 1000 : 0;
+      nextOn = ev[i].t;
+    }
+  }
   let ei = 0;
   for (let pos = 0; pos < frames; pos += BLOCK) {
     const nowT = pos / SR;
     while (ei < ev.length && ev[ei].t <= nowT) {
+      const k = ei;
       const e = ev[ei++];
       if (e.on) {
         if (e.expr) {
@@ -292,7 +303,9 @@ function renderEngine(engine) {
           const vib = Math.max(0, (p.vibrato ?? 0.4) * e.expr[1]);
           const press = Math.max(0.2, (p.pressure ?? 1) * e.expr[2]);
           const atk = Math.max(1, (p.attackMs ?? 8) * e.expr[3]);
-          vem.vem_set_expr(engine.eng, bow, press, vib, atk, e.expr[4]);
+          vem.vem_set_expr(engine.eng, bow, press, vib, atk, e.expr[4], lead[k]);
+        } else {
+          vem.vem_set_expr(engine.eng, (engine.entry.params?.bow ?? 0.5), 1, (engine.entry.params?.vibrato ?? 0.4), (engine.entry.params?.attackMs ?? 45), 0, lead[k]);
         }
         vem.vem_note_on(engine.eng, e.note, e.vel / 127);
       } else {

@@ -20,7 +20,7 @@ use crate::spectrum::{coef_for, TimbreParams};
 
 pub const BLOCK: usize = 64;
 pub const MAX_VOICES: usize = 12;
-const MAX_TRANS: usize = 8;
+const MAX_TRANS: usize = 12;
 
 /// 与参考实现一致的默认种子（`ref-instrument --seed 12345`）。
 pub const DEFAULT_SEED: u32 = 12345;
@@ -31,6 +31,7 @@ pub const DIRECTOR_SCALE: f32 = 0.01 * core::f32::consts::FRAC_1_SQRT_2;
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum TransKind {
     Env,
+    Amp,
     Freq,
     Bow,
 }
@@ -84,6 +85,8 @@ pub struct NoteExpr {
     pub vibrato: f32,
     pub attack_ms: f32,
     pub detune_cents: f32,
+    /// 到同一个声部下一个音的距离（ms，0 = 未知）。用于在换音前自然渐弱。
+    pub lead_ms: f32,
 }
 
 pub struct Voice {
@@ -95,6 +98,8 @@ pub struct Voice {
     releasing: bool,
     articulation: Articulation,
     envelope: f32,
+    /// 分句输出增益（音头/收尾）。默认 1.0，不参与还原对拍。
+    amp: f32,
     freq: f32,
     bow_base: f32,
     press_base: f32,
@@ -127,6 +132,7 @@ impl Voice {
             releasing: false,
             articulation: Articulation::Arco,
             envelope: 0.0,
+            amp: 1.0,
             freq: 440.0,
             bow_base: 0.5,
             press_base: 1.0,
@@ -226,6 +232,7 @@ impl Voice {
             vibrato: ctx.vibrato_depth,
             attack_ms: 0.0,
             detune_cents: 0.0,
+            lead_ms: 0.0,
         });
         self.bow_base = e.bow.clamp(0.05, 0.95);
         self.press_base = e.pressure.clamp(0.2, 2.0);
@@ -270,18 +277,65 @@ impl Voice {
                 } else {
                     0.0
                 };
-                let from = if legato && env.legato_accent > 0.0 {
-                    start_env * (1.0 + env.legato_accent)
+                let phrasing = e.lead_ms > 60.0 && (env.accent > 0.0 || env.taper > 0.0);
+                if phrasing {
+                    // 分句包络：音头 → 回落 → 换音前渐弱（结束于下一个音）
+                    let peak = 1.0 + env.accent.clamp(0.0, 0.5);
+                    let acc_ms = if self.attack_ms_override > 0.0 {
+                        self.attack_ms_override
+                    } else {
+                        env.accent_ms
+                    };
+                    let acc = ((acc_ms * ctx.sr / 1000.0).max(1.0)) as u64;
+                    let body = (env.body_ms * ctx.sr / 1000.0) as u64;
+                    let taper = (env.taper_ms * ctx.sr / 1000.0) as u64;
+                    let lead = (e.lead_ms * ctx.sr / 1000.0) as u64;
+                    self.envelope = start_env;
+                    self.add_trans(TransKind::Env, 0, acc, start_env, peak, step);
+                    self.add_trans(TransKind::Env, acc, body, peak, 1.0, step);
+                    // 同一形状作用到输出增益上，让渐弱/音头真正可闻
+                    self.amp = if legato { self.amp } else { 1.0 };
+                    let amp_from = self.amp;
+                    self.add_trans(TransKind::Amp, 0, acc, amp_from, peak, step);
+                    self.add_trans(TransKind::Amp, acc, body, peak, 1.0, step);
+                    if env.taper > 0.0 && taper > 0 {
+                        let begin = lead.saturating_sub(taper);
+                        if begin > acc + body {
+                            self.add_trans(
+                                TransKind::Amp,
+                                begin,
+                                lead - begin,
+                                1.0,
+                                1.0 - env.taper,
+                                step,
+                            );
+                        } else if lead > acc + body {
+                            let d = acc + body;
+                            self.add_trans(
+                                TransKind::Amp,
+                                d,
+                                lead - d,
+                                1.0,
+                                1.0 - env.taper,
+                                step,
+                            );
+                        }
+                    }
                 } else {
-                    start_env
-                };
-                let ramp = if legato && env.legato_ramp_ms > 0.0 {
-                    (env.legato_ramp_ms * ctx.sr / 1000.0).max(1.0) as u64
-                } else {
-                    attack_time
-                };
-                self.envelope = start_env;
-                self.add_trans(TransKind::Env, 0, ramp, from, 1.0, step);
+                    self.amp = 1.0;
+                    let from = if legato && env.legato_accent > 0.0 {
+                        start_env * (1.0 + env.legato_accent)
+                    } else {
+                        start_env
+                    };
+                    let ramp = if legato && env.legato_ramp_ms > 0.0 {
+                        (env.legato_ramp_ms * ctx.sr / 1000.0).max(1.0) as u64
+                    } else {
+                        attack_time
+                    };
+                    self.envelope = start_env;
+                    self.add_trans(TransKind::Env, 0, ramp, from, 1.0, step);
+                }
                 self.legato_boost = if legato { env.legato_boost.max(0.0) } else { 0.0 };
                 self.legato_boost_ms = env.legato_boost_ms.max(1.0);
                 if !legato {
@@ -408,6 +462,9 @@ impl Voice {
                 TransKind::Env => {
                     self.envelope = v;
                     volume_changed = true;
+                }
+                TransKind::Amp => {
+                    self.amp = v;
                 }
                 TransKind::Freq => {
                     self.freq = v;
@@ -882,7 +939,7 @@ impl Engine {
                             continue;
                         }
                     }
-                    let mut sig = v.inst.generate(fft);
+                    let mut sig = v.inst.generate(fft) * v.amp;
                     if noise_active {
                         let mut nz =
                             noise_scale * v.inst.get_volume() * noise_samples[v.noise.position];
@@ -1078,6 +1135,7 @@ mod tests {
             vibrato: 0.0,
             attack_ms: 5.0,
             detune_cents: 100.0,
+            lead_ms: 0.0,
         });
         shifted.note_on(69, 0.8);
         let b = render_seconds(&mut shifted, 0.5);
@@ -1093,6 +1151,59 @@ mod tests {
             (x[..n].iter().map(|v| v * v).sum::<f32>() / n as f32).sqrt()
         };
         assert!(head(&b) > head(&a) * 2.0, "head b={} a={}", head(&b), head(&a));
+    }
+
+    #[test]
+    fn phrase_taper_is_audible() {
+        let mut e = Engine::new(48000.0, InstrumentType::Violin);
+        e.output_gain = 1.0;
+        e.envelope.accent = 0.0;
+        e.envelope.taper = 0.5;
+        e.envelope.taper_ms = 200.0;
+        e.envelope.body_ms = 50.0;
+        e.envelope.accent_ms = 30.0;
+        e.set_expr(NoteExpr {
+            bow: 0.5,
+            pressure: 1.0,
+            vibrato: 0.0,
+            attack_ms: 30.0,
+            detune_cents: 0.0,
+            lead_ms: 1000.0,
+        });
+        e.note_on(69, 0.8);
+        let all = render_seconds(&mut e, 1.0);
+        let mean = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        let steady = mean(&all[12000..24000]);
+        let tapered = mean(&all[44000..47800]);
+        assert!(tapered < steady * 0.75, "steady={steady} tapered={tapered}");
+    }
+
+    #[test]
+    fn phrase_cli_taper() {
+        let mut e = Engine::new(48000.0, InstrumentType::Violin);
+        e.output_gain = 1.0;
+        e.envelope.legato_start = 1.0;
+        e.envelope.legato_ramp_ms = 0.0;
+        e.envelope.accent = 0.0;
+        e.envelope.accent_ms = 45.0;
+        e.envelope.body_ms = 50.0;
+        e.envelope.taper = 0.6;
+        e.envelope.taper_ms = 400.0;
+        e.set_oversample(0);
+        e.set_expr(NoteExpr {
+            bow: 0.5,
+            pressure: 1.0,
+            vibrato: 0.4,
+            attack_ms: e.envelope.accent_ms,
+            detune_cents: 0.0,
+            lead_ms: 1500.0,
+        });
+        e.note_on(69, 0.8);
+        let all = render_seconds(&mut e, 1.5);
+        let mean = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        let steady = mean(&all[12000..24000]);
+        let tapered = mean(&all[66000..71600]);
+        assert!(tapered < steady * 0.75, "steady={steady} tapered={tapered}");
     }
 
     #[test]

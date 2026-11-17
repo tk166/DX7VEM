@@ -209,6 +209,7 @@ pub extern "C" fn vem_set_polyphonic(p: *mut c_void, on: i32) {
 }
 
 /// 每个音的表情（在 note_on 之前设置一次；缺省 = 引擎全局参数）
+/// `lead_ms` = 到同声部下一个音的时间（0 = 未知），用于换音前自然渐弱
 #[no_mangle]
 pub extern "C" fn vem_set_expr(
     p: *mut c_void,
@@ -217,6 +218,7 @@ pub extern "C" fn vem_set_expr(
     vibrato: f32,
     attack_ms: f32,
     detune_cents: f32,
+    lead_ms: f32,
 ) {
     if p.is_null() {
         return;
@@ -227,7 +229,29 @@ pub extern "C" fn vem_set_expr(
         vibrato,
         attack_ms,
         detune_cents,
+        lead_ms,
     });
+}
+
+/// 分句包络：音头重音 / 回落 / 换音前渐弱
+#[no_mangle]
+pub extern "C" fn vem_set_phrase(
+    p: *mut c_void,
+    accent: f32,
+    accent_ms: f32,
+    body_ms: f32,
+    taper: f32,
+    taper_ms: f32,
+) {
+    if p.is_null() {
+        return;
+    }
+    let e = engine_mut(p);
+    e.envelope.accent = accent.clamp(0.0, 0.5);
+    e.envelope.accent_ms = accent_ms.clamp(5.0, 300.0);
+    e.envelope.body_ms = body_ms.clamp(0.0, 600.0);
+    e.envelope.taper = taper.clamp(0.0, 0.6);
+    e.envelope.taper_ms = taper_ms.clamp(10.0, 600.0);
 }
 
 #[no_mangle]
