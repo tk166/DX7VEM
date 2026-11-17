@@ -35,6 +35,8 @@ class MsfaProcessor extends AudioWorkletProcessor {
     this.vemAccL = new Float32Array(BLOCK);
     this.vemAccR = new Float32Array(BLOCK);
     this._views = new Map();
+    // 主动打招呼：Safari 首载时主线程立即 postMessage 可能早于处理器就绪而丢失
+    this.port.postMessage({ type: "hello" });
   }
 
   /// 缓存 WASM 内存的 Float32 视图（Safari 上每块都 new 会造成 GC 抖动）

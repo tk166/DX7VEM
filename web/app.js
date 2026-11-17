@@ -17,6 +17,11 @@ let originalNotes = null;
 let humCfg = null;
 let humanizeApi = null;
 let humTimer = null;
+let initMsg = null;
+let initSent = false;
+let wantPlay = false;
+let initWatchdog = null;
+let sendInit = () => {};
 
 const fxDefault = {
   reverb: { mix: 0.18, size: 0.6, damp: 0.45, width: 1 },
@@ -188,6 +193,7 @@ async function boot() {
 
     setStatus("启动音频…", "busy");
     ctx = new AudioContext({ latencyHint: "playback" });
+    ctx.onstatechange = onAudioState;
     setStatus("加载 worklet…", "busy");
     await ctx.audioWorklet.addModule("worklet.js");
     setStatus("加载 wasm…", "busy");
@@ -213,8 +219,10 @@ async function boot() {
     });
     node.connect(ctx.destination);
     node.port.onmessage = onWorklet;
+    el.play.disabled = true;
+    setStatus("音频初始化…", "busy");
 
-    node.port.postMessage({
+    initMsg = {
       type: "init",
       wasmBinary,
       patches,
@@ -236,7 +244,20 @@ async function boot() {
             })),
           }
         : null,
-    });
+    };
+    // Safari：等 worklet 主动 "hello" 后再发 init；同时留一个兜底定时器
+    sendInit = () => {
+      if (initSent || !node || !initMsg) return;
+      initSent = true;
+      node.port.postMessage(initMsg);
+      initWatchdog = setTimeout(() => {
+        if (!ready) {
+          setStatus("音频初始化超时：请刷新页面", "");
+          el.status.classList.add("err");
+        }
+      }, 8000);
+    };
+    setTimeout(sendInit, 1500);
     if (vemReady) {
       buildVemUI();
       el.meta.textContent = `DX7 9→${9 - new Set(vemTracks.map((t) => t.channel)).size + 1} 轨 + VEM 弦乐 ${vemTracks.length} 个声部${dataCount ? "（含琴体/弓噪）" : ""} · 立体声`;
@@ -251,9 +272,18 @@ async function boot() {
 
 function onWorklet(ev) {
   const m = ev.data;
-  if (m.type === "ready") {
+  if (m.type === "hello") {
+    // Safari 首载：worklet 已就绪，可以安全接收 init
+    sendInit();
+  } else if (m.type === "ready") {
+    if (initWatchdog) clearTimeout(initWatchdog);
     ready = true;
+    el.play.disabled = false;
     setStatus(`就绪 · ${m.sampleRate} Hz · ${m.events} 事件`, "ok");
+    if (wantPlay) {
+      wantPlay = false;
+      togglePlay();
+    }
   } else if (m.type === "error") {
     console.error(m.message);
     setStatus("音频引擎错误：" + m.message.split("\n")[0], "");
@@ -364,20 +394,69 @@ function postFx() {
   if (ready) node.port.postMessage({ type: "fx", fx });
 }
 
+// iOS/Safari：切后台、来电等会让 AudioContext 进入 suspended/interrupted；
+// 回来后需要重新 resume，且 UI 要和实际状态一致（否则会出现“显示在播放但没声/进度不动”）。
+function setPlayingUI(on) {
+  playing = on;
+  el.play.textContent = on ? "❚❚" : "▶";
+  el.play.classList.toggle("on", on);
+}
+
+function onAudioState() {
+  if (!ctx) return;
+  if (ctx.state === "running") {
+    if (playing) setStatus("播放中", "ok");
+  } else if (playing) {
+    setPlayingUI(false);
+    if (node) node.port.postMessage({ type: "pause" });
+    setStatus("音频被系统暂停：点播放继续", "");
+  }
+}
+
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState !== "visible" || !ctx || !ready) return;
+  if (ctx.state !== "running") {
+    try {
+      await ctx.resume();
+    } catch (e) {
+      console.warn("resume after visibility failed", e);
+    }
+    if (ctx.state !== "running") setStatus("已切回前台：点播放继续", "");
+  }
+});
+
+window.addEventListener("pageshow", (e) => {
+  if (e.persisted) setStatus("页面从缓存恢复：如没有声音请刷新一次", "");
+});
+
 // ---- 传输控制 ----
-function togglePlay() {
-  if (!ready) return;
-  if (ctx.state === "suspended") ctx.resume();
-  playing = !playing;
-  el.play.textContent = playing ? "❚❚" : "▶";
-  el.play.classList.toggle("on", playing);
-  if (playing) {
+async function togglePlay() {
+  if (!ready) {
+    wantPlay = true;
+    setStatus("还在加载音频…加载完成后会自动开始", "busy");
+    return;
+  }
+  // Safari：必须在用户手势里 resume，并等它真正 running 再发 play
+  if (ctx.state !== "running") {
+    try {
+      await ctx.resume();
+    } catch (e) {
+      console.warn("resume failed", e);
+    }
+    if (ctx.state !== "running") {
+      setStatus("浏览器阻止了音频：请再点一次播放", "");
+      return;
+    }
+  }
+  if (!playing) {
     if (cur >= duration - 0.2) {
       seek(0);
     }
+    setPlayingUI(true);
     node.port.postMessage({ type: "play" });
     setStatus("播放中", "ok");
   } else {
+    setPlayingUI(false);
     node.port.postMessage({ type: "pause" });
     setStatus("暂停", "ok");
   }

@@ -614,6 +614,34 @@ UI 顶部新增三个按钮：
 > 另有已知 WebKit 问题：iPadOS 17.5 + 44.1 kHz AudioContext + AudioWorklet 会有失真
 >（WebKit bug 274507），与“规律卡顿”不同；如果升级后仍有失真，先确认 iOS 版本。
 
+## 45. Safari 首载静默 + 切后台回来卡住（两件事一起修）
+
+**症状 1**：Safari 第一次进页面点播放，进度条不动、没声音；刷新一次就正常。Edge 正常。
+
+**根因**：主线程在 `new AudioWorkletNode()` 之后**立刻** `postMessage(init)`。
+Safari 的处理器尚未构造完成时这条消息会被丢掉；缓存命中后时序变快就没事（所以“刷新一次才行”）。
+另外 `togglePlay` 在 `ready=false` 时是**静默 return**，用户只会看到按钮没反应。
+
+**修法**：
+- worklet 构造函数里主动 `postMessage({type:"hello"})`；主线程收到 hello 再发 init，
+  另留 1.5 s 兜底；init 后 8 s 没有 ready 就提示超时；
+- 播放按钮在 ready 前是 disabled；如果用户提前点了，记下 `wantPlay`，ready 后自动开始；
+- `togglePlay` 改成 async：在用户手势里 `await ctx.resume()`，确认 `state==="running"` 再发 play，
+  否则明确提示“请再点一次”。
+
+**症状 2**：播放中切到别的 App，声音中断；切回来进度不动、也不恢复。
+
+**根因**：iOS/Safari 会把 AudioContext 置为 suspended/interrupted，UI 的 `playing` 还是 true，
+于是“显示在播放、实际没渲染”。
+
+**修法**：
+- 监听 `ctx.onstatechange`：非 running 且正在播放 → UI 置为暂停、给 worklet 发 pause，
+  状态栏提示“音频被系统暂停：点播放继续”；
+- 监听 `visibilitychange`：回到前台时尝试 `ctx.resume()`（成功就继续，失败就提示点播放）；
+- `pageshow`（bfcache）恢复时提示刷新。
+- 播放按钮的语义改成“恢复而不是暂停”，避免第一下点击只是把 UI 切成暂停。
+
+
 
 
 
