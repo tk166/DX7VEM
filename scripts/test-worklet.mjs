@@ -71,6 +71,9 @@ const gains = tracks.map((t) => {
   const db = mixDefaults?.channelsDb?.[String(t.channel)];
   return db !== undefined ? Math.pow(10, db / 20) : (t.volume ?? 1);
 });
+// 与网页一致：带每音表情的事件（零偏移即可，用于验证 seek/热替换路径）
+const eventCount = new DataView(events.buffer, events.byteOffset, events.byteLength).getUint32(4, true);
+const exprs = new Float32Array(eventCount * 5);
 
 const send = (m) => proc.port.onmessage({ data: m });
 const take = () => proc.__msgs.splice(0, proc.__msgs.length);
@@ -80,6 +83,7 @@ send({
   type: "init", wasmBinary, patches, tracks, events,
   master: mix.masterVolume, duration: mix.duration,
   gains,
+  exprs,
   vem,
   fx: {
     reverb: { mix: 0.18, size: 0.6, damp: 0.45, width: 1 },

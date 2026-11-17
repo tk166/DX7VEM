@@ -494,6 +494,26 @@ wasm：**89.6 KB**、imports 0（`cargo test` 28 项通过）。
 代价：当前按住的长音会重新起音（和拖动进度条的行为一致），提示写在 UI 里。
 `scripts/test-worklet.mjs` 也覆盖了这条路径。
 
+## 40. 【线上事故】web/vem.wasm 没同步 → worklet 直接崩、进度卡住、全部静音
+
+**症状**：页面能 ready、能播放，但听几秒后进度条不动、所有声部都没声音；控制台不一定有提示。
+
+**根因**：`web/vem.wasm` 是一次旧构建（缺 `vem_set_expr`），而网页默认开启 humanize，
+第一次给 VEM 发音时执行 `vem_set_expr(...)` → `TypeError` 冒泡到 `AudioWorkletProcessor.process()`，
+处理器直接停摆：不再渲染、也不再发 `pos` 消息（所以进度条卡住）。
+
+`build-wasm.ps1` 的"复制到 web/"偶尔没生效（文件被浏览器占用/时序问题），而脚本没有校验。
+
+**修法**：
+1. `build-wasm.ps1` 复制后**比对哈希**，不一致直接报错；
+2. worklet 对新增导出做**存在性检查**（缺失就跳过并 `postMessage({type:'warn'})`），不让音频线程崩；
+3. 网页 fetch wasm 加 `no-store` + 时间戳，`serve.cjs` 改 `Cache-Control: no-store`；
+4. `test-worklet.mjs` 现在带 `exprs` 跑 init/seek/热替换，能在 Node 侧提前抓到这种 ABI 不同步。
+
+> 另外：CH3 在 66–74 s 等段落本来就没有音符（CH6 首个音在 63 s、CH8 在 10.8 s），
+> 单听某一轨时"没声音"不一定是 bug，先看 `notes.bin` 该通道的事件区间。
+
+
 
 
 

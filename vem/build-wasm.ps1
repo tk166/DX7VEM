@@ -36,4 +36,7 @@ Write-Host "产物: $dst"
 $webDst = Join-Path $root "../web/vem.wasm"
 Copy-Item $dst $webDst -Force
 Write-Host "网页副本: $webDst"
+if ((Get-FileHash $dst).Hash -ne (Get-FileHash $webDst).Hash) {
+    throw "web/vem.wasm 同步失败（可能被浏览器占用）。关掉页面后重试。"
+}
 node (Join-Path $root "../scripts/check-standalone.mjs") $dst

@@ -102,8 +102,8 @@ async function boot() {
     setStatus("加载 wasm…", "busy");
     const instruments = [...new Set(vemTracks.map((t) => t.instrument))];
     const [wasmBinary, vemBinary, noiseBuf, ...bodies] = await Promise.all([
-      fetch("msfa.wasm").then((r) => r.arrayBuffer()),
-      fetch("vem.wasm").then((r) => (r.ok ? r.arrayBuffer() : null)),
+      fetch(`msfa.wasm?v=${Date.now()}`, { cache: "no-store" }).then((r) => r.arrayBuffer()),
+      fetch(`vem.wasm?v=${Date.now()}`, { cache: "no-store" }).then((r) => (r.ok ? r.arrayBuffer() : null)),
       fetch("data/vem/noise.bin").then((r) => (r.ok ? r.arrayBuffer() : null)),
       ...instruments.map((inst) =>
         fetch(`data/vem/body-${inst}.bin`).then((r) => (r.ok ? r.arrayBuffer() : null))
@@ -167,6 +167,9 @@ function onWorklet(ev) {
     console.error(m.message);
     setStatus("音频引擎错误：" + m.message.split("\n")[0], "");
     el.status.classList.add("err");
+  } else if (m.type === "warn") {
+    console.warn(m.message);
+    setStatus("提示：" + m.message, "");
   } else if (m.type === "pos") {
     if (!dragging) cur = m.time;
     el.fill.style.width = `${Math.min(100, (cur / duration) * 100)}%`;

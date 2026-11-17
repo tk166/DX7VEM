@@ -276,10 +276,15 @@ class MsfaProcessor extends AudioWorkletProcessor {
 
   applyVemEngine(e) {
     const { E, eng, params: p } = e;
-    E.vem_set_articulation(eng, p.art | 0);
-    E.vem_set_bow(eng, p.bow, p.pressure);
-    E.vem_set_vibrato(eng, p.vibrato, p.vibratoRate);
-    E.vem_set_envelope(
+    // 老版本 wasm 可能没有新导出：缺失就跳过，不能让 AudioWorklet 崩掉
+    const call = (fn, ...args) => {
+      if (typeof fn === "function") fn(...args);
+    };
+    call(E.vem_set_articulation, eng, p.art | 0);
+    call(E.vem_set_bow, eng, p.bow, p.pressure);
+    call(E.vem_set_vibrato, eng, p.vibrato, p.vibratoRate);
+    call(
+      E.vem_set_envelope,
       eng,
       p.attackMs,
       p.attackVelMs,
@@ -289,10 +294,10 @@ class MsfaProcessor extends AudioWorkletProcessor {
       p.vibOnsetMs,
       60
     );
-    E.vem_set_release_rate(eng, p.releaseRate);
-    E.vem_set_body(eng, p.bodyMix, 0.6);
-    E.vem_set_bow_noise(eng, p.bowNoiseOn === 0 ? 0 : 1, p.bowNoise);
-    E.vem_set_legato(eng, p.legatoStart ?? 0.5, p.legatoRampMs ?? 0, p.legatoAccent ?? 0, p.legatoBoost ?? 0, p.legatoBoostMs ?? 25);
+    call(E.vem_set_release_rate, eng, p.releaseRate);
+    call(E.vem_set_body, eng, p.bodyMix, 0.6);
+    call(E.vem_set_bow_noise, eng, p.bowNoiseOn === 0 ? 0 : 1, p.bowNoise);
+    call(E.vem_set_legato, eng, p.legatoStart ?? 0.5, p.legatoRampMs ?? 0, p.legatoAccent ?? 0, p.legatoBoost ?? 0, p.legatoBoostMs ?? 25);
   }
 
   // 把 FX 参数下发给 wasm（bypass 时全部旁通）
@@ -372,13 +377,18 @@ class MsfaProcessor extends AudioWorkletProcessor {
             if (note < e.entry.minNote || note > e.entry.maxNote) continue;
             if (on) {
               if (this.exprs) {
-                const b = idx * 5;
-                const p = e.params;
-                const bow = Math.min(0.95, Math.max(0.05, (p.bow ?? 0.5) + this.exprs[b]));
-                const vib = Math.max(0, (p.vibrato ?? 0.4) * this.exprs[b + 1]);
-                const press = Math.max(0.2, (p.pressure ?? 1) * this.exprs[b + 2]);
-                const atk = Math.max(1, (p.attackMs ?? 8) * this.exprs[b + 3]);
-                e.E.vem_set_expr(e.eng, bow, press, vib, atk, this.exprs[b + 4]);
+                if (typeof e.E.vem_set_expr === "function") {
+                  const b = idx * 5;
+                  const p = e.params;
+                  const bow = Math.min(0.95, Math.max(0.05, (p.bow ?? 0.5) + this.exprs[b]));
+                  const vib = Math.max(0, (p.vibrato ?? 0.4) * this.exprs[b + 1]);
+                  const press = Math.max(0.2, (p.pressure ?? 1) * this.exprs[b + 2]);
+                  const atk = Math.max(1, (p.attackMs ?? 8) * this.exprs[b + 3]);
+                  e.E.vem_set_expr(e.eng, bow, press, vib, atk, this.exprs[b + 4]);
+                } else if (!this.exprWarned) {
+                  this.exprWarned = true;
+                  this.port.postMessage({ type: "warn", message: "vem.wasm 缺少 vem_set_expr（需要重新 build-wasm）" });
+                }
               }
               e.E.vem_note_on(e.eng, note, vel / 127);
             } else {
