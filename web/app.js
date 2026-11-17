@@ -57,9 +57,12 @@ async function boot() {
       fetch("data/humanize.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ]);
     let notes = notesBuf;
+    let exprs = null;
     if (humCfg && humCfg.enabled !== false) {
       const { humanizeBuffer } = await import("./humanize.js");
-      notes = humanizeBuffer(notesBuf, humCfg);
+      const h = humanizeBuffer(notesBuf, humCfg);
+      notes = h.buffer;
+      exprs = h.exprs;
     }
     vemTracks = vemConfig;
     if (defaults) mixDefaults = defaults;
@@ -110,6 +113,7 @@ async function boot() {
       gains: tracks.map((t) =>
         dbToGain(mixDefaults.channelsDb?.[String(t.channel)] ?? gainToDb(t.volume))
       ),
+      exprs,
       vem: vemReady
         ? {
             wasmBinary: vemBinary,

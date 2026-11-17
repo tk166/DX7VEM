@@ -233,6 +233,7 @@ class MsfaProcessor extends AudioWorkletProcessor {
       this.evData[i * 4 + 3] = dv.getUint8(o + 7);
     }
     this.evIndex = 0;
+    this.exprs = msg.exprs ? new Float32Array(msg.exprs) : null;
     this.fx = msg.fx;
     this.ready = true;
     this.applyFx();
@@ -331,11 +332,24 @@ class MsfaProcessor extends AudioWorkletProcessor {
         const d = this.evIndex * 4;
         const ch = this.evData[d], note = this.evData[d + 1], vel = this.evData[d + 2], on = this.evData[d + 3];
         if (this.vemChannels && this.vemChannels.has(ch)) {
+          const idx = this.evIndex;
           for (const e of this.vemEngines) {
             if (e.entry.channel !== ch) continue;
             if (note < e.entry.minNote || note > e.entry.maxNote) continue;
-            if (on) e.E.vem_note_on(e.eng, note, vel / 127);
-            else e.E.vem_note_off(e.eng, note);
+            if (on) {
+              if (this.exprs) {
+                const b = idx * 5;
+                const p = e.params;
+                const bow = Math.min(0.95, Math.max(0.05, (p.bow ?? 0.5) + this.exprs[b]));
+                const vib = Math.max(0, (p.vibrato ?? 0.4) * this.exprs[b + 1]);
+                const press = Math.max(0.2, (p.pressure ?? 1) * this.exprs[b + 2]);
+                const atk = Math.max(1, (p.attackMs ?? 8) * this.exprs[b + 3]);
+                e.E.vem_set_expr(e.eng, bow, press, vib, atk, this.exprs[b + 4]);
+              }
+              e.E.vem_note_on(e.eng, note, vel / 127);
+            } else {
+              e.E.vem_note_off(e.eng, note);
+            }
           }
         } else if (on) this.E._msfa_mixer_note_on(this.mixer, ch, note, vel);
         else this.E._msfa_mixer_note_off(this.mixer, ch, note);

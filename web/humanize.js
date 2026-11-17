@@ -69,6 +69,11 @@ export function humanizeEvents(song, opts = {}) {
   const velAmount = opts.velocity ?? 6;
   const phraseTempoMs = opts.phraseTempoMs ?? 22;
   const phraseDynamics = opts.phraseDynamics ?? 0.06;
+  const pitchCents = opts.pitchCents ?? 4;
+  const bowJitter = opts.bowJitter ?? 0.05;
+  const vibJitter = opts.vibratoJitter ?? 0.12;
+  const pressJitter = opts.pressureJitter ?? 0.05;
+  const attackJitter = opts.attackJitter ?? 0.1;
 
   const rand = mulberry32(seed);
   // 两条慢速呼吸：周期与相位随机，但由种子固定
@@ -86,14 +91,23 @@ export function humanizeEvents(song, opts = {}) {
     1 + phraseDynamics * Math.sin((2 * Math.PI * t) / (p1 * 0.8) + ph3);
 
   // 1) 每个 note-on 一个抖动，配对的 note-off 用同一个偏移
+  //    同时生成每音表情（弓位偏移 / 弓压/揉弦/起音倍率 / 音准 cents）
   const pending = new Map();
   const dt = new Array(song.events.length).fill(0);
+  const exprByIndex = new Array(song.events.length).fill(null);
   for (let i = 0; i < song.events.length; i++) {
     const e = song.events[i];
     const key = `${e.ch}:${e.note}`;
     if (e.on) {
       const jitter = ((rand() * 2 - 1) * timingMs) / 1000;
       dt[i] = warp(e.t) + jitter;
+      exprByIndex[i] = [
+        (rand() * 2 - 1) * bowJitter,
+        1 + (rand() * 2 - 1) * vibJitter,
+        1 + (rand() * 2 - 1) * pressJitter,
+        1 + (rand() * 2 - 1) * attackJitter,
+        (rand() * 2 - 1) * pitchCents,
+      ];
       if (!pending.has(key)) pending.set(key, []);
       pending.get(key).push(dt[i]);
     } else {
@@ -109,14 +123,20 @@ export function humanizeEvents(song, opts = {}) {
       vel = Math.round(vel * dyn(e.t) + (rand() * 2 - 1) * velAmount);
       vel = Math.max(1, Math.min(127, vel));
     }
-    return { ...e, t: Math.max(0, e.t + dt[i]), vel };
+    return { ...e, t: Math.max(0, e.t + dt[i]), vel, expr: exprByIndex[i] };
   });
   out.sort((a, b) => a.t - b.t || (a.on === b.on ? 0 : a.on ? 1 : -1));
-  return { events: out, duration: song.duration };
+
+  // 表情数组与排序后的事件一一对应（供二进制通道使用）
+  const exprs = new Float32Array(out.length * 5);
+  for (let i = 0; i < out.length; i++) {
+    if (out[i].expr) exprs.set(out[i].expr, i * 5);
+  }
+  return { events: out, duration: song.duration, exprs };
 }
 
 export function humanizeBuffer(buffer, opts = {}) {
   const song = parseEvents(buffer);
   const h = humanizeEvents(song, opts);
-  return encodeEvents(h.events, h.duration);
+  return { buffer: encodeEvents(h.events, h.duration), exprs: h.exprs };
 }

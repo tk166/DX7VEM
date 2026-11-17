@@ -115,6 +115,8 @@ void  vem_set_envelope(void*, float attack_ms, float attack_velocity_ms,
                        float release_ms, float release_slow_ms,
                        float bow_settle_ms, float vibrato_onset_ms, float vibrato_onset_ramp_ms);
 void  vem_set_release_rate(void*, float);            // 0..1
+void  vem_set_legato(void*, float start, float ramp_ms, float accent, float boost, float boost_ms);
+void  vem_set_expr(void*, float bow, float pressure, float vibrato, float attack_ms, float detune_cents);
 void  vem_set_bow(void*, float position, float pressure);
 void  vem_set_articulation(void*, int art);   // 0 arco 1 marcato 2 glissando 3 spiccato 4 pizzicato 5 collegno 6 tremolo
 void  vem_set_harmonics(void*, int on);

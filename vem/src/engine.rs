@@ -1,4 +1,4 @@
-//! 引擎总装：voice 池（每音一个 Instrument）+ 控制率包络/弓位/频率 + 参数平滑 + 总线。
+﻿//! 引擎总装：voice 池（每音一个 Instrument）+ 控制率包络/弓位/频率 + 参数平滑 + 总线。
 //!
 //! 控制率默认 100 采样 @48k（= 480 Hz），与参考实现的 `step%100==0` 对齐；
 //! 7 种弓法的 transition 时序（起音/弓位归位/滑音/跳弓/拨弦/tremolo）逐条照抄
@@ -77,6 +77,15 @@ struct ControlCtx {
     sr: f32,
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct NoteExpr {
+    pub bow: f32,
+    pub pressure: f32,
+    pub vibrato: f32,
+    pub attack_ms: f32,
+    pub detune_cents: f32,
+}
+
 pub struct Voice {
     inst: Instrument,
     active: bool,
@@ -87,6 +96,11 @@ pub struct Voice {
     articulation: Articulation,
     envelope: f32,
     freq: f32,
+    bow_base: f32,
+    press_base: f32,
+    vib_base: f32,
+    detune: f32,
+    attack_ms_override: f32,
     bow_shift: f32,
     trans: [Option<Trans>; MAX_TRANS],
     note_on_step: u64,
@@ -114,6 +128,11 @@ impl Voice {
             articulation: Articulation::Arco,
             envelope: 0.0,
             freq: 440.0,
+            bow_base: 0.5,
+            press_base: 1.0,
+            vib_base: 0.4,
+            detune: 1.0,
+            attack_ms_override: 0.0,
             bow_shift: 0.0,
             trans: [None; MAX_TRANS],
             note_on_step: 0,
@@ -184,6 +203,7 @@ impl Voice {
         articulation: Articulation,
         timbre: TimbreParams,
         rng: &mut Random,
+        expr: Option<NoteExpr>,
     ) {
         let prev_note = self.note;
         let prev_freq = self.freq;
@@ -200,13 +220,25 @@ impl Voice {
         self.silence_ticks = 0;
         self.trans = [None; MAX_TRANS];
         self.freq = midi_to_frequency(note);
+        let e = expr.unwrap_or(NoteExpr {
+            bow: ctx.bow,
+            pressure: 1.0,
+            vibrato: ctx.vibrato_depth,
+            attack_ms: 0.0,
+            detune_cents: 0.0,
+        });
+        self.bow_base = e.bow.clamp(0.05, 0.95);
+        self.press_base = e.pressure.clamp(0.2, 2.0);
+        self.vib_base = e.vibrato.max(0.0);
+        self.attack_ms_override = e.attack_ms.max(0.0);
+        self.detune = (2.0f32).powf(e.detune_cents.clamp(-200.0, 200.0) / 1200.0);
 
         let s48 = |samples: i64| -> u64 {
             (samples as f32 * ctx.sr / 48000.0).round().max(0.0) as u64
         };
 
         self.inst.set_timbre(timbre);
-        self.inst.set_frequency(self.freq * ctx.bend);
+        self.inst.set_frequency(self.freq * ctx.bend * self.detune);
         self.inst.note_on(note, articulation);
         self.noise.tune(self.freq, ctx.sr);
 
@@ -218,7 +250,7 @@ impl Voice {
                     let slide_time = 200 + (interval * 2000.0 * (1.0 - velocity)) as i64;
                     let end_frequency = self.freq;
                     self.freq = prev_freq;
-                    self.inst.set_frequency(self.freq * ctx.bend);
+                    self.inst.set_frequency(self.freq * ctx.bend * self.detune);
                     self.add_trans(
                         TransKind::Freq,
                         0,
@@ -228,7 +260,11 @@ impl Voice {
                         step,
                     );
                 }
-                let attack_time = env.attack_samples(velocity, ctx.sr).max(0) as u64;
+                let attack_time = if self.attack_ms_override > 0.0 {
+                    (self.attack_ms_override * ctx.sr / 1000.0).max(1.0) as u64
+                } else {
+                    env.attack_samples(velocity, ctx.sr).max(0) as u64
+                };
                 let start_env = if legato {
                     env.legato_start.clamp(0.0, 1.0) * self.envelope
                 } else {
@@ -249,9 +285,9 @@ impl Voice {
                 self.legato_boost = if legato { env.legato_boost.max(0.0) } else { 0.0 };
                 self.legato_boost_ms = env.legato_boost_ms.max(1.0);
                 if !legato {
-                    self.bow_shift = -ctx.bow;
+                    self.bow_shift = -self.bow_base;
                     let settle = env.bow_settle_samples(ctx.sr).max(0) as u64;
-                    self.add_trans(TransKind::Bow, 0, settle, -ctx.bow, 0.0, step);
+                    self.add_trans(TransKind::Bow, 0, settle, -self.bow_base, 0.0, step);
                 }
             }
             Articulation::Marcato => {
@@ -267,9 +303,9 @@ impl Voice {
                     step,
                 );
                 if !legato {
-                    self.bow_shift = -ctx.bow;
+                    self.bow_shift = -self.bow_base;
                     let settle = env.bow_settle_samples(ctx.sr).max(0) as u64;
-                    self.add_trans(TransKind::Bow, 0, settle, -ctx.bow, 0.0, step);
+                    self.add_trans(TransKind::Bow, 0, settle, -self.bow_base, 0.0, step);
                 }
             }
             Articulation::Spiccato => {
@@ -396,7 +432,7 @@ impl Voice {
 
         // ---- volume（含 tremolo 的 3 段式） ----
         if volume_changed {
-            let mut vol = ctx.volume * self.envelope;
+            let mut vol = ctx.volume * self.press_base * self.envelope;
             if tremolo {
                 if stepi > self.tremolo_end {
                     vol = 0.0;
@@ -440,12 +476,12 @@ impl Voice {
                 vib_scale = ((t_ms - ctx.vibrato_onset_ms) / ramp).clamp(0.0, 1.0);
             }
             self.inst
-                .set_vibrato_amplitude(0.01 * ctx.vibrato_depth * self.envelope * vib_scale);
+                .set_vibrato_amplitude(0.01 * self.vib_base * self.envelope * vib_scale);
         }
 
         // ---- frequency ----
         if freq_changed {
-            let mut freq = self.freq * ctx.bend;
+            let mut freq = self.freq * ctx.bend * self.detune;
             if tremolo {
                 let freq_delta = 0.014 * freq * ctx.volume_raw;
                 let low_freq = freq - 0.5 * freq_delta;
@@ -463,7 +499,7 @@ impl Voice {
 
         // ---- bow position ----
         if bow_changed {
-            let mut pos = (ctx.bow + self.bow_shift).max(0.0);
+            let mut pos = (self.bow_base + self.bow_shift).max(0.0);
             if tremolo && stepi > self.tremolo_start && self.tremolo_down_bow {
                 let x = (stepi - self.tremolo_start) as f32
                     / (self.tremolo_end - self.tremolo_start) as f32;
@@ -533,6 +569,7 @@ pub struct Engine {
     pub bow_noise_mode: i32,
     pub bow_noise_amount: f32,
     pub rng: Random,
+    pending_expr: Option<NoteExpr>,
 }
 
 impl Engine {
@@ -585,6 +622,7 @@ impl Engine {
             bow_noise_mode: 1,
             bow_noise_amount: 0.5,
             rng: Random::with_seed(DEFAULT_SEED),
+            pending_expr: None,
         };
         e.rebuild_voices();
         // 与参考实现 Division 的随机序列对齐：初始化时先取一次 uniform（分配噪声起点用）
@@ -684,6 +722,10 @@ impl Engine {
         }
     }
 
+    pub fn set_expr(&mut self, expr: NoteExpr) {
+        self.pending_expr = Some(expr);
+    }
+
     pub fn note_on(&mut self, note: i32, velocity: f32) {
         let velocity = velocity.clamp(0.0, 1.0);
         let mut slot = None;
@@ -725,6 +767,7 @@ impl Engine {
         let env = self.envelope;
         let art = self.articulation;
         let timbre = self.timbre;
+        let expr = self.pending_expr.take();
         self.voices[slot].start(
             note,
             velocity,
@@ -736,6 +779,7 @@ impl Engine {
             art,
             timbre,
             &mut self.rng,
+            expr,
         );
     }
 
@@ -1007,9 +1051,52 @@ mod tests {
         }
     }
 
+    fn goertzel(x: &[f32], sr: f32, freq: f32) -> f32 {
+        let w = 2.0 * core::f32::consts::PI * freq / sr;
+        let coeff = 2.0 * w.cos();
+        let (mut s0, mut s1, mut s2) = (0.0f32, 0.0f32, 0.0f32);
+        for &v in x {
+            s0 = v + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - coeff * s1 * s2).sqrt()
+    }
+
     #[test]
-    fn spiccato_and_pizzicato_decay_without_note_off() {
-        for &art in &[Articulation::Spiccato, Articulation::Pizzicato] {
+    fn note_expr_detune_and_attack() {
+        let mut plain = Engine::new(48000.0, InstrumentType::Violin);
+        plain.output_gain = 1.0;
+        plain.note_on(69, 0.8);
+        let a = render_seconds(&mut plain, 0.5);
+
+        let mut shifted = Engine::new(48000.0, InstrumentType::Violin);
+        shifted.output_gain = 1.0;
+        shifted.set_expr(NoteExpr {
+            bow: 0.5,
+            pressure: 1.0,
+            vibrato: 0.0,
+            attack_ms: 5.0,
+            detune_cents: 100.0,
+        });
+        shifted.note_on(69, 0.8);
+        let b = render_seconds(&mut shifted, 0.5);
+
+        // +100 cent：466 Hz 的能量应显著高于 440 Hz
+        let e440 = goertzel(&b[12000..], 48000.0, 440.0);
+        let e466 = goertzel(&b[12000..], 48000.0, 466.16);
+        assert!(e466 > e440 * 1.5, "e440={e440} e466={e466}");
+
+        // attack 5ms：开头 5ms 的 RMS 应高于默认（141ms 起音）
+        let head = |x: &[f32]| {
+            let n = 240; // 5 ms
+            (x[..n].iter().map(|v| v * v).sum::<f32>() / n as f32).sqrt()
+        };
+        assert!(head(&b) > head(&a) * 2.0, "head b={} a={}", head(&b), head(&a));
+    }
+
+    #[test]
+    fn spiccato_and_pizzicato_decay_without_note_off() {        for &art in &[Articulation::Spiccato, Articulation::Pizzicato] {
             let mut e = Engine::new(48000.0, InstrumentType::Violin);
             e.output_gain = 1.0;
             e.articulation = art;

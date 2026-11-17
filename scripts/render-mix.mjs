@@ -285,8 +285,19 @@ function renderEngine(engine) {
     const nowT = pos / SR;
     while (ei < ev.length && ev[ei].t <= nowT) {
       const e = ev[ei++];
-      if (e.on) vem.vem_note_on(engine.eng, e.note, e.vel / 127);
-      else vem.vem_note_off(engine.eng, e.note);
+      if (e.on) {
+        if (e.expr) {
+          const p = engine.entry.params || {};
+          const bow = Math.min(0.95, Math.max(0.05, (p.bow ?? 0.5) + e.expr[0]));
+          const vib = Math.max(0, (p.vibrato ?? 0.4) * e.expr[1]);
+          const press = Math.max(0.2, (p.pressure ?? 1) * e.expr[2]);
+          const atk = Math.max(1, (p.attackMs ?? 8) * e.expr[3]);
+          vem.vem_set_expr(engine.eng, bow, press, vib, atk, e.expr[4]);
+        }
+        vem.vem_note_on(engine.eng, e.note, e.vel / 127);
+      } else {
+        vem.vem_note_off(engine.eng, e.note);
+      }
     }
     vem.vem_render(engine.eng, outL, outR, BLOCK);
     const sl = heapF32(vem, outL, BLOCK);

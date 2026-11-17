@@ -458,6 +458,29 @@ UI 从“一组全局 VEM 滑杆”改为 **2×2 的四个独立面板**（CH3 �
 默认值下：平均时间偏移 11 ms、最大 34 ms；力度平均改变约 11；两次运行输出逐字节一致。
 `render-mix.mjs --humanize` 用同一模块/配置，所以离线试听和浏览器听到的是同一套起伏。
 
+## 38. 每音表情（per-note expression）
+
+引擎新增 `vem_set_expr(bow, pressure, vibrato, attack_ms, detune_cents)`：
+在 `note_on` 前设置，`Voice` 会把它存成该音的**基准值**（弓位/弓压/揉弦深度/起音/音分），
+之后的控制 tick 都以它为基准（叠加弓位过渡、tremolo 等）。不设置时使用全局参数，行为与之前完全一致。
+
+humanize 同时生成每音表情（`exprs` 数组，与事件一一对应）：
+
+| 项 | 默认抖动 |
+|---|---|
+| 弓位 | ±0.05 |
+| 揉弦深度 | ±12% |
+| 弓压 | ±5% |
+| 起音 | ±10% |
+| 音准 | ±4 cent |
+
+网页侧把 `exprs` 随事件一起下发，worklet 在 `vem_note_on` 前调用 `vem_set_expr`；
+离线混音用同一份 `humanize.js`。单测覆盖：+100 cent 时 466 Hz 能量显著高于 440 Hz；
+起音 5 ms 的开头 RMS 明显高于默认 141 ms。
+
+wasm：**89.6 KB**、imports 0（`cargo test` 28 项通过）。
+
+
 
 
 

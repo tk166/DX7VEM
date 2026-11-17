@@ -26,7 +26,7 @@ pub mod smooth;
 pub mod spectrum;
 
 pub use articulations::Articulation;
-pub use engine::{Engine, BLOCK, DEFAULT_SEED, DIRECTOR_SCALE, MAX_VOICES};
+pub use engine::{Engine, NoteExpr, BLOCK, DEFAULT_SEED, DIRECTOR_SCALE, MAX_VOICES};
 pub use envelope::EnvelopeParams;
 pub use instrument::InstrumentType;
 pub use spectrum::TimbreParams;
@@ -206,6 +206,28 @@ pub extern "C" fn vem_set_polyphonic(p: *mut c_void, on: i32) {
         return;
     }
     engine_mut(p).polyphonic = on != 0;
+}
+
+/// 每个音的表情（在 note_on 之前设置一次；缺省 = 引擎全局参数）
+#[no_mangle]
+pub extern "C" fn vem_set_expr(
+    p: *mut c_void,
+    bow: f32,
+    pressure: f32,
+    vibrato: f32,
+    attack_ms: f32,
+    detune_cents: f32,
+) {
+    if p.is_null() {
+        return;
+    }
+    engine_mut(p).set_expr(NoteExpr {
+        bow,
+        pressure,
+        vibrato,
+        attack_ms,
+        detune_cents,
+    });
 }
 
 #[no_mangle]
