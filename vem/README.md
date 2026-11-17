@@ -146,3 +146,4 @@ void  vem_free_mem(uint8_t* ptr, size_t bytes);
 | M5 Web 集成 | ✅ | 双 wasm worklet（DX7 9 轨 + VEM CH3）+ 参数 UI；单声部 CPU 2.80% |
 | M6 收尾 | ✅ | 87.2 KB / imports 0；单声部 CPU 2.80%；数据与许可见 `docs/数据与许可.md` |
 | M7 弦乐组 | ✅ | CH6 中提琴、CH8 大提琴+低音提琴（按音高拆分）；整曲电平 +0.05 dB、召回 0.975–0.998；wasm 88.3 KB |
+| M8 主观默认值 + 独立面板 | ✅ | `mix-defaults.json` + 每个声部独立参数；UI 四个面板；worklet 汇总后软限幅 |

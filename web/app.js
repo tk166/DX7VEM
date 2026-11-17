@@ -21,34 +21,23 @@ const fx = {
 };
 let bypass = false;
 
-// VEM（弦乐组）参数：默认 = M4 的 melody 预设
-const VEM_INSTRUMENTS = { violin: 0, viola: 1, cello: 2, bass: 3 };
-const BODY_MIX = { violin: 0.18, viola: 0.18, cello: 0.22, bass: 0.3 };
+// VEM（弦乐组）：每条声部的参数在 vem-tracks.json 的 params 里，UI 逐条独立调节
 let vemTracks = [];
-const vemParams = {
-  art: 0,
-  bow: 0.5,
-  pressure: 1,
-  vibrato: 0.4,
-  vibratoRate: 5.2,
-  attackMs: 8,
-  attackVelMs: 60,
-  releaseMs: 60,
-  releaseSlowMs: 120,
-  bowSettleMs: 208.33,
-  vibOnsetMs: 120,
-  releaseRate: 0.5,
-  bodyMix: 0.18,
-  bowNoiseOn: 1,
-  bowNoise: 0.5,
+let mixDefaults = { masterDb: -3, channelsDb: {} };
+const postVemTrack = (index, params) => {
+  const entry = vemTracks[index];
+  if (entry) Object.assign(entry.params, params);
+  if (ready) node.port.postMessage({ type: "vemTrack", index, params });
 };
-const postVem = (patch) => {
-  Object.assign(vemParams, patch);
-  if (ready) node.port.postMessage({ type: "vemParam", params: patch });
-};
-const postVemTrack = (index, patch) => {
-  if (ready) node.port.postMessage({ type: "vemTrack", index, params: patch });
-};
+const ART_OPTIONS = [
+  "Arco 连弓",
+  "Marcato 重音",
+  "Glissando 滑音",
+  "Spiccato 跳弓",
+  "Pizzicato 拨弦",
+  "Col Legno 击弦",
+  "Tremolo 颤弓",
+];
 
 function setStatus(text, kind = "") {
   el.status.textContent = text;
@@ -58,18 +47,20 @@ function setStatus(text, kind = "") {
 async function boot() {
   try {
     setStatus("加载数据…", "busy");
-    const [tracks, mix, patches, notes, vemConfig] = await Promise.all([
+    const [tracks, mix, patches, notes, vemConfig, defaults] = await Promise.all([
       fetch("data/tracks.json").then((r) => r.json()),
       fetch("data/mix.json").then((r) => r.json()),
       fetch("data/patches.bin").then((r) => r.arrayBuffer()),
       fetch("data/notes.bin").then((r) => r.arrayBuffer()),
       fetch("data/vem-tracks.json").then((r) => (r.ok ? r.json() : [])).catch(() => []),
+      fetch("data/mix-defaults.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ]);
     vemTracks = vemConfig;
+    if (defaults) mixDefaults = defaults;
     duration = mix.duration;
     el.tdur.textContent = fmt(duration);
     el.meta.textContent = `DX7 · msfa(WASM) · ${tracks.length} 轨 · 立体声`;
-    el.master.value = gainToDb(mix.masterVolume).toFixed(1);
+    el.master.value = Number(mixDefaults.masterDb ?? gainToDb(mix.masterVolume)).toFixed(1);
     el.masterVal.textContent = `${Number(el.master.value).toFixed(1)} dB`;
     buildTrackUI(tracks);
 
@@ -110,16 +101,14 @@ async function boot() {
       master: dbToGain(Number(el.master.value)),
       fx: { ...fx, chorus: { ...fx.chorus } },
       duration,
+      gains: tracks.map((t) =>
+        dbToGain(mixDefaults.channelsDb?.[String(t.channel)] ?? gainToDb(t.volume))
+      ),
       vem: vemReady
         ? {
             wasmBinary: vemBinary,
             tracks: vemTracks.map((t) => ({
               ...t,
-              params: {
-                ...vemParams,
-                bodyMix: BODY_MIX[t.instrument] ?? 0.18,
-                bowNoiseOn: 1,
-              },
               data: [bodyByInst[t.instrument], noiseBuf].filter(Boolean),
             })),
           }
@@ -170,7 +159,13 @@ function buildTrackUI(tracks) {
     const row = document.createElement("div");
     row.className = "row";
     const entry = vemEntry(t.channel);
-    const db = gainToDb(entry && entry.gain !== undefined ? entry.gain : t.volume);
+    const chDb = mixDefaults.channelsDb?.[String(t.channel)];
+    const db =
+      chDb !== undefined
+        ? Number(chDb)
+        : entry && entry.gain !== undefined
+        ? gainToDb(entry.gain)
+        : gainToDb(t.volume);
     const tag = entry ? `<small>VEM ${entry.instrument}</small>` : "";
     row.innerHTML = `
       <span class="name">CH${t.channel + 1}${tag}</span>
@@ -187,30 +182,50 @@ function buildTrackUI(tracks) {
   });
 }
 
+function addVemRow(panel, idx, key, label, min, max, step, value, fmt, extra) {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = `<span class="name">${label}</span><input type="range" min="${min}" max="${max}" step="${step}" value="${value}" /><span class="val">${fmt(Number(value))}</span>`;
+  const input = row.querySelector("input");
+  const val = row.querySelector(".val");
+  input.addEventListener("input", () => {
+    const v = Number(input.value);
+    val.textContent = fmt(v);
+    postVemTrack(idx, { [key]: v, ...(extra ? extra(v) : {}) });
+  });
+  panel.appendChild(row);
+}
+
 function buildVemUI() {
-  const host = $("vemTracks");
+  const host = $("vemPanels");
   if (!host) return;
   host.innerHTML = "";
   vemTracks.forEach((t, idx) => {
-    const row = document.createElement("div");
-    row.className = "row";
-    row.innerHTML = `
-      <span class="name">${t.label}</span>
-      <select data-vem="${idx}" style="grid-column: span 2; padding:6px; border-radius:8px; background:var(--panel2); color:var(--text); border:1px solid var(--line)">
-        <option value="0">Arco 连弓</option>
-        <option value="1">Marcato 重音</option>
-        <option value="2">Glissando 滑音</option>
-        <option value="3">Spiccato 跳弓</option>
-        <option value="4">Pizzicato 拨弦</option>
-        <option value="5">Col Legno 击弦</option>
-        <option value="6">Tremolo 颤弓</option>
-      </select>`;
-    const sel = row.querySelector("select");
-    sel.value = String(t.art ?? 0);
-    sel.addEventListener("change", () =>
-      postVemTrack(idx, { art: Number(sel.value) })
-    );
-    host.appendChild(row);
+    const p = t.params || {};
+    const panel = document.createElement("div");
+    panel.className = "vem-panel";
+    const head = document.createElement("h3");
+    head.innerHTML = `${t.label} <small style="color:var(--dim);font-weight:400">${t.instrument}</small>`;
+    panel.appendChild(head);
+
+    const artRow = document.createElement("div");
+    artRow.className = "row";
+    artRow.innerHTML = `<span class="name">弓法</span><select style="grid-column: span 2; padding:6px; border-radius:8px; background:var(--panel2); color:var(--text); border:1px solid var(--line)">${ART_OPTIONS.map(
+      (label, i) => `<option value="${i}">${label}</option>`
+    ).join("")}</select>`;
+    const sel = artRow.querySelector("select");
+    sel.value = String(p.art ?? 0);
+    sel.addEventListener("change", () => postVemTrack(idx, { art: Number(sel.value) }));
+    panel.appendChild(artRow);
+
+    addVemRow(panel, idx, "bow", "弓位", 0, 1, 0.01, p.bow ?? 0.5, (v) => v.toFixed(2));
+    addVemRow(panel, idx, "vibrato", "揉弦深度", 0, 1.5, 0.01, p.vibrato ?? 0.4, (v) => v.toFixed(2));
+    addVemRow(panel, idx, "vibOnsetMs", "揉弦渐入", 0, 500, 10, p.vibOnsetMs ?? 120, (v) => `${v} ms`);
+    addVemRow(panel, idx, "attackMs", "起音", 2, 300, 1, p.attackMs ?? 8, (v) => `${v} ms`);
+    addVemRow(panel, idx, "bowNoise", "弓噪", 0, 1, 0.01, p.bowNoise ?? 0.5, (v) => `${Math.round(v * 100)}%`, (v) => ({ bowNoiseOn: v > 0 ? 1 : 0 }));
+    addVemRow(panel, idx, "bodyMix", "琴体共振", 0, 0.6, 0.01, p.bodyMix ?? 0.18, (v) => v.toFixed(2));
+
+    host.appendChild(panel);
   });
 }
 
@@ -309,14 +324,7 @@ bind("choMix", (v) => `${Math.round(v * 100)}%`, (v) => { fx.chorus.mix = v; pos
 bind("choSpread", (v) => `${v}°`, (v) => { fx.chorus.spread = v; postFx(); });
 $("choOn").addEventListener("change", (e) => { fx.chorus.on = e.target.checked ? 1 : 0; postFx(); });
 
-// ---- VEM（CH3 弦乐）----
-$("vemArt").addEventListener("change", (e) => postVem({ art: Number(e.target.value) }));
-bind("vemBow", (v) => v.toFixed(2), (v) => postVem({ bow: v }));
-bind("vemVib", (v) => v.toFixed(2), (v) => postVem({ vibrato: v }));
-bind("vemVibOnset", (v) => `${v} ms`, (v) => postVem({ vibOnsetMs: v }));
-bind("vemAttack", (v) => `${v} ms`, (v) => postVem({ attackMs: v }));
-bind("vemNoise", (v) => `${Math.round(v * 100)}%`, (v) => postVem({ bowNoise: v, bowNoiseOn: v > 0 ? 1 : 0 }));
-bind("vemBody", (v) => v.toFixed(2), (v) => postVem({ bodyMix: v }));
+// ---- VEM：每个声部的控件由 buildVemUI() 动态生成 ----
 
 el.bypass.addEventListener("change", (e) => {
   bypass = e.target.checked;

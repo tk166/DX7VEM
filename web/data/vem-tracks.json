@@ -7,8 +7,24 @@
     "maxNote": 127,
     "polyphonic": false,
     "preset": "melody",
-    "calibration": 0.906,
-    "gain": 0.9063179241941115
+    "gain": 0.7079457843841379,
+    "params": {
+      "art": 0,
+      "bow": 0.36,
+      "pressure": 1,
+      "vibrato": 0.7,
+      "vibratoRate": 5.2,
+      "attackMs": 141,
+      "attackVelMs": 60,
+      "releaseMs": 60,
+      "releaseSlowMs": 120,
+      "bowSettleMs": 208.33,
+      "vibOnsetMs": 160,
+      "releaseRate": 0.5,
+      "bodyMix": 0.21,
+      "bowNoise": 0.5,
+      "bowNoiseOn": 1
+    }
   },
   {
     "channel": 5,
@@ -18,8 +34,24 @@
     "maxNote": 127,
     "polyphonic": true,
     "preset": "melody",
-    "calibration": 0.906,
-    "gain": 0.08427090966287687
+    "gain": 0.7079457843841379,
+    "params": {
+      "art": 0,
+      "bow": 0.36,
+      "pressure": 1,
+      "vibrato": 0.7,
+      "vibratoRate": 5.2,
+      "attackMs": 141,
+      "attackVelMs": 60,
+      "releaseMs": 60,
+      "releaseSlowMs": 120,
+      "bowSettleMs": 208.33,
+      "vibOnsetMs": 160,
+      "releaseRate": 0.5,
+      "bodyMix": 0.21,
+      "bowNoise": 0.5,
+      "bowNoiseOn": 1
+    }
   },
   {
     "channel": 7,
@@ -29,8 +61,24 @@
     "maxNote": 127,
     "polyphonic": true,
     "preset": "melody",
-    "calibration": 0.906,
-    "gain": 0.06770126047167252
+    "gain": 0.4216965034285822,
+    "params": {
+      "art": 0,
+      "bow": 0.36,
+      "pressure": 1,
+      "vibrato": 0.7,
+      "vibratoRate": 5.2,
+      "attackMs": 141,
+      "attackVelMs": 60,
+      "releaseMs": 60,
+      "releaseSlowMs": 120,
+      "bowSettleMs": 208.33,
+      "vibOnsetMs": 160,
+      "releaseRate": 0.5,
+      "bodyMix": 0.21,
+      "bowNoise": 0.5,
+      "bowNoiseOn": 1
+    }
   },
   {
     "channel": 7,
@@ -40,7 +88,23 @@
     "maxNote": 43,
     "polyphonic": true,
     "preset": "melody",
-    "calibration": 0.906,
-    "gain": 0.06770126047167252
+    "gain": 0.4216965034285822,
+    "params": {
+      "art": 0,
+      "bow": 0.36,
+      "pressure": 1,
+      "vibrato": 0.7,
+      "vibratoRate": 5.2,
+      "attackMs": 141,
+      "attackVelMs": 60,
+      "releaseMs": 60,
+      "releaseSlowMs": 120,
+      "bowSettleMs": 208.33,
+      "vibOnsetMs": 160,
+      "releaseRate": 0.5,
+      "bodyMix": 0.21,
+      "bowNoise": 0.5,
+      "bowNoiseOn": 1
+    }
   }
 ]

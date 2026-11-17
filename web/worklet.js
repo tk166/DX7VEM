@@ -9,6 +9,14 @@
 
 const BLOCK = 64;
 
+// 末端软限幅：保护 0 dBFS（与引擎里的曲线一致）
+function softClip(x) {
+  const t = 0.98, inv = 1 - t;
+  if (x > t) return t + inv * Math.tanh((x - t) / inv);
+  if (x < -t) return -t - inv * Math.tanh((-x - t) / inv);
+  return x;
+}
+
 class MsfaProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -185,6 +193,26 @@ class MsfaProcessor extends AudioWorkletProcessor {
     this.outL = this.E.malloc(BLOCK * 4);
     this.outR = this.E.malloc(BLOCK * 4);
 
+    // 初始推子（dB→线性由主线程算好）：VEM 通道是引擎绝对增益
+    if (msg.gains) {
+      for (let i = 0; i < this.tracks.length; i++) {
+        const ch = this.tracks[i].channel;
+        const g = msg.gains[i];
+        if (g === undefined) continue;
+        this.trackGain[i] = g;
+        if (this.vemChannels && this.vemChannels.has(ch)) {
+          for (const e of this.vemEngines) {
+            if (e.entry.channel === ch) {
+              e.entry.gain = g;
+              e.E.vem_set_gain(e.eng, g);
+            }
+          }
+        } else {
+          this.E._msfa_mixer_set_gain(this.mixer, ch, g);
+        }
+      }
+    }
+
     // 事件（兼容 ArrayBuffer / TypedArray）
     const evBytes = msg.events instanceof ArrayBuffer
       ? new Uint8Array(msg.events)
@@ -337,8 +365,8 @@ class MsfaProcessor extends AudioWorkletProcessor {
         if (this.fade < 1) this.fade = Math.min(1, this.fade + 1 / (0.002 * this.sr));
         const l = sl[i] + (vl ? vl[i] : 0);
         const r = sr[i] + (vr ? vr[i] : 0);
-        L[base + i] = l * this.fade;
-        R[base + i] = r * this.fade;
+        L[base + i] = softClip(l * this.fade);
+        R[base + i] = softClip(r * this.fade);
       }
     }
     this.pos += frames;

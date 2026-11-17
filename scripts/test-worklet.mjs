@@ -59,17 +59,18 @@ if (engine !== "dx7" && existsSync("web/vem.wasm")) {
     return {
       ...t,
       data: [bodyCache[t.instrument], noise].filter(Boolean),
-      params: {
-        art: 0, bow: 0.5, pressure: 1, vibrato: 0.4, vibratoRate: 5.2,
-        attackMs: 8, attackVelMs: 60, releaseMs: 60, releaseSlowMs: 120,
-        bowSettleMs: 208.33, vibOnsetMs: 120, releaseRate: 0.5,
-        bodyMix: 0.18, bowNoiseOn: 1, bowNoise: 0.5,
-      },
     };
   });
   vem = { wasmBinary: wasm, tracks };
   console.log(`VEM: ${(wasm.byteLength / 1024).toFixed(1)} KB，${tracks.length} 个声部`);
 }
+const mixDefaults = existsSync("web/data/mix-defaults.json")
+  ? JSON.parse(readFileSync("web/data/mix-defaults.json", "utf8"))
+  : null;
+const gains = tracks.map((t) => {
+  const db = mixDefaults?.channelsDb?.[String(t.channel)];
+  return db !== undefined ? Math.pow(10, db / 20) : (t.volume ?? 1);
+});
 
 const send = (m) => proc.port.onmessage({ data: m });
 const take = () => proc.__msgs.splice(0, proc.__msgs.length);
@@ -78,6 +79,7 @@ console.log(`初始化：${tracks.length} 轨，${(events.byteLength / 1024).toF
 send({
   type: "init", wasmBinary, patches, tracks, events,
   master: mix.masterVolume, duration: mix.duration,
+  gains,
   vem,
   fx: {
     reverb: { mix: 0.18, size: 0.6, damp: 0.45, width: 1 },

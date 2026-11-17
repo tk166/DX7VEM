@@ -36,6 +36,12 @@ const patchesPath = opt("--patches", join(root, "web/data/patches.bin"));
 const mixPath = opt("--mix", join(root, "web/data/mix.json"));
 const dataDir = opt("--data", join(root, "out/vem-data"));
 const configPath = opt("--vem-tracks", join(root, "web/data/vem-tracks.json"));
+const mixDefaultsPath = opt("--mix-defaults", "");
+const dbToGain = (db) => Math.pow(10, db / 20);
+const mixDefaults = mixDefaultsPath && existsSync(mixDefaultsPath)
+  ? JSON.parse(readFileSync(mixDefaultsPath, "utf8"))
+  : null;
+const mixDb = mixDefaults?.channelsDb || null;
 const outPath = argv.find((a) => a.endsWith(".wav")) || join(root, "out/p03-vem-mix.wav");
 const preset = opt("--preset", "melody");
 const explicitEnv = ["--attack-ms", "--attack-vel-ms", "--release-ms", "--release-slow-ms", "--bow-settle-ms", "--vib-onset-ms"].some((k) => argv.includes(k));
@@ -70,7 +76,9 @@ const tracks = JSON.parse(readFileSync(tracksPath, "utf8"));
 const patches = readFileSync(patchesPath);
 const mix = JSON.parse(readFileSync(mixPath, "utf8"));
 let vemTracks = JSON.parse(readFileSync(configPath, "utf8"));
-const master = mix.masterVolume ?? 1;
+const master = mixDefaults
+  ? dbToGain(mixDefaults.masterDb ?? 0)
+  : mix.masterVolume ?? 1;
 const dur = Number(opt("--dur", Math.max(notesDuration, mix.duration ?? 0) + 2));
 const frames = Math.ceil(dur * SR);
 const vemChannels = new Set(vemTracks.map((v) => v.channel));
@@ -112,7 +120,8 @@ function makeMsfa(channels) {
     heapBytes(msfa, p, patch);
     ptrs.push(p);
     msfa.msfa_mixer_set_patch(mx, ch, p);
-    msfa.msfa_mixer_set_gain(mx, ch, tracks[i].volume ?? 1);
+    const db = mixDb ? mixDb[String(ch)] : undefined;
+    msfa.msfa_mixer_set_gain(mx, ch, db !== undefined ? dbToGain(db) : tracks[i].volume ?? 1);
     msfa.msfa_mixer_set_chorus(mx, ch, 0, 0.6, 0.5, 0.7, 180);
   }
   return { mx, ptrs };
@@ -279,6 +288,15 @@ for (const ch of vemChannels) {
   const dx7 = msfaChannelStem(ch);
   dx7Stems.set(ch, dx7);
   const rmsDx7 = rmsOf(dx7);
+  if (mixDb) {
+    const gain = dbToGain(mixDb[String(ch)] ?? 0);
+    gainByChannel.set(ch, gain);
+    for (const e of group) e.entry.gain = gain;
+    console.log(
+      `  CH${ch + 1}: 使用 mix-defaults ${(mixDb[String(ch)] ?? 0).toFixed(1)} dB（DX7 rms=${rmsDx7.toFixed(5)} / VEM rms=${rmsVem.toFixed(5)}，不再按 RMS 校准）`
+    );
+    continue;
+  }
   const gain = rmsVem > 1e-12 ? rmsDx7 / rmsVem : 1;
   gainByChannel.set(ch, gain);
   for (const e of group) e.entry.gain = gain;

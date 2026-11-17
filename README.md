@@ -44,6 +44,7 @@ node scripts/vem-metrics.mjs out/ref-69.wav out/vem-69.wav --from 0.5 --to 3.5 -
 | M5 Web/AudioWorklet 集成 | ✅ |
 | M6 收尾（体积/CPU/许可） | ✅ |
 | M7 弦乐组（CH6 中提琴 + CH8 大提琴/低音提琴） | ✅ |
+| M8 主观默认值 + 四把琴独立面板 | ✅ |
 
 ## 关键数字
 
