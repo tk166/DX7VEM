@@ -18,12 +18,15 @@ let humCfg = null;
 let humanizeApi = null;
 let humTimer = null;
 
-const fx = {
+const fxDefault = {
   reverb: { mix: 0.18, size: 0.6, damp: 0.45, width: 1 },
   comp: { on: 1, thr: -12, ratio: 2, atk: 15, rel: 200, makeup: 1 },
   chorus: { on: 1, rate: 0.6, depth: 0.5, mix: 0.7, spread: 180 },
 };
+let fx = JSON.parse(JSON.stringify(fxDefault));
 let bypass = false;
+let trackList = [];
+const DEFAULTS_KEY = "vem-ui-defaults-v2";
 
 // VEM（弦乐组）：每条声部的参数在 vem-tracks.json 的 params 里，UI 逐条独立调节
 let vemTracks = [];
@@ -42,6 +45,90 @@ const ART_OPTIONS = [
   "Col Legno 击弦",
   "Tremolo 颤弓",
 ];
+
+// ---- 默认值导入/导出（本机保存用 localStorage） ----
+function loadSavedDefaults() {
+  try {
+    return JSON.parse(localStorage.getItem(DEFAULTS_KEY) || "null");
+  } catch (e) {
+    return null;
+  }
+}
+
+function applySavedDefaults(saved) {
+  if (!saved) return;
+  if (saved.fx) fx = Object.assign(fx, saved.fx);
+  if (typeof saved.masterDb === "number") mixDefaults.masterDb = saved.masterDb;
+  if (saved.channelsDb) mixDefaults.channelsDb = saved.channelsDb;
+  if (Array.isArray(saved.vem)) {
+    saved.vem.forEach((s, i) => {
+      if (vemTracks[i] && s.params) Object.assign(vemTracks[i].params, s.params);
+    });
+  }
+  if (saved.humanize) Object.assign(humCfg, saved.humanize);
+}
+
+function collectDefaults() {
+  const channelsDb = {};
+  document.querySelectorAll("#tracks .row").forEach((row, i) => {
+    const t = trackList[i];
+    if (!t) return;
+    channelsDb[String(t.channel)] = Number(row.querySelector("input").value);
+  });
+  return {
+    masterDb: Number(el.master.value),
+    channelsDb,
+    fx,
+    vem: vemTracks.map((t) => ({ channel: t.channel, instrument: t.instrument, params: { ...t.params } })),
+    humanize: { ...humCfg },
+  };
+}
+
+function saveDefaults() {
+  localStorage.setItem(DEFAULTS_KEY, JSON.stringify(collectDefaults()));
+  setStatus("已保存为本机默认（刷新后仍生效）", "ok");
+}
+
+function exportDefaults() {
+  const blob = new Blob([JSON.stringify(collectDefaults(), null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "vem-defaults.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus("已导出 vem-defaults.json（可发给开发者固化为文件默认）", "ok");
+}
+
+function resetDefaults() {
+  localStorage.removeItem(DEFAULTS_KEY);
+  location.reload();
+}
+
+function syncFxUI() {
+  const setNum = (id, v, f) => {
+    const e = $(id);
+    if (!e) return;
+    e.value = v;
+    const o = $(id + "Val");
+    if (o) o.textContent = f(Number(v));
+  };
+  setNum("revMix", fx.reverb.mix, (v) => `${Math.round(v * 100)}%`);
+  setNum("revSize", fx.reverb.size, (v) => v.toFixed(2));
+  setNum("revDamp", fx.reverb.damp, (v) => v.toFixed(2));
+  setNum("revWidth", fx.reverb.width, (v) => v.toFixed(2));
+  if ($("revOn")) $("revOn").checked = fx.reverb.mix > 0;
+  setNum("compThr", fx.comp.thr, (v) => `${v} dB`);
+  setNum("compRatio", fx.comp.ratio, (v) => `${v}:1`);
+  setNum("compAtk", fx.comp.atk, (v) => `${v} ms`);
+  setNum("compRel", fx.comp.rel, (v) => `${v} ms`);
+  setNum("compMakeup", fx.comp.makeup, (v) => `+${v} dB`);
+  if ($("compOn")) $("compOn").checked = !!fx.comp.on;
+  setNum("choRate", fx.chorus.rate, (v) => `${v.toFixed(2)} Hz`);
+  setNum("choDepth", fx.chorus.depth, (v) => v.toFixed(2));
+  setNum("choMix", fx.chorus.mix, (v) => `${Math.round(v * 100)}%`);
+  setNum("choSpread", fx.chorus.spread, (v) => `${v}°`);
+  if ($("choOn")) $("choOn").checked = !!fx.chorus.on;
+}
 
 function setStatus(text, kind = "") {
   el.status.textContent = text;
@@ -79,6 +166,8 @@ async function boot() {
       },
       humConfigRaw || {}
     );
+    applySavedDefaults(loadSavedDefaults());
+    syncFxUI();
     humanizeApi = await import("./humanize.js");
     setupHumUI();
     if (humCfg.enabled !== false) {
@@ -87,7 +176,9 @@ async function boot() {
       exprs = h.exprs;
     }
     vemTracks = vemConfig;
+    trackList = tracks;
     if (defaults) mixDefaults = defaults;
+    if (defaults && defaults.fx) fx = JSON.parse(JSON.stringify(defaults.fx));
     duration = mix.duration;
     el.tdur.textContent = fmt(duration);
     el.meta.textContent = `DX7 · msfa(WASM) · ${tracks.length} 轨 · 立体声`;
@@ -431,6 +522,11 @@ function applyHumanize() {
   node.port.postMessage({ type: "events", events: buf, exprs });
   setStatus("演奏起伏已更新", "ok");
 }
+
+// ---- 默认值按钮 ----
+$("saveDefaults")?.addEventListener("click", saveDefaults);
+$("exportDefaults")?.addEventListener("click", exportDefaults);
+$("resetDefaults")?.addEventListener("click", resetDefaults);
 
 setStatus("加载中…", "busy");
 boot();
