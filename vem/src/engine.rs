@@ -571,7 +571,11 @@ impl Engine {
         let sr = self.sample_rate;
         let ov = self.oversample;
         let seed = self.seed;
-        self.voices = core::array::from_fn(|i| Voice::new(i, sr, it, ov, seed));
+        // 每个 voice 用不同的随机序列（voice 0 保持原种子 → 单声部对拍不变）
+        self.voices = core::array::from_fn(|i| {
+            let s = seed ^ (i as u32).wrapping_mul(0x9E37_79B1);
+            Voice::new(i, sr, it, ov, s)
+        });
         self.apply_noise_positions();
     }
 

@@ -187,8 +187,8 @@ function msfaChannelStem(ch) {
 
 // ---------------------------------------------------------------- VEM
 
-function applyVemParams(eng, entry) {
-  vem.vem_set_seed(eng, 12345);
+function applyVemParams(eng, entry, idx) {
+  vem.vem_set_seed(eng, entry.seed ?? 12345 + idx * 7919);
   vem.vem_set_master(eng, master);
   vem.vem_set_gain(eng, 1);
   vem.vem_set_polyphonic(eng, entry.polyphonic ? 1 : 0);
@@ -228,9 +228,9 @@ function loadVemData(eng, instrument) {
   return loaded;
 }
 
-const engines = vemTracks.map((entry) => {
+const engines = vemTracks.map((entry, idx) => {
   const eng = vem.vem_new(SR, INSTRUMENT_INDEX[entry.instrument] ?? 0);
-  applyVemParams(eng, entry);
+  applyVemParams(eng, entry, idx);
   const loaded = loadVemData(eng, entry.instrument);
   console.log(`  VEM ${entry.label}: ${entry.instrument} ch=${entry.channel + 1} notes=${entry.minNote}..${entry.maxNote} poly=${!!entry.polyphonic} data=${loaded}`);
   return { eng, entry, stem: null };

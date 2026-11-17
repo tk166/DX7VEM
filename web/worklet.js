@@ -139,7 +139,8 @@ class MsfaProcessor extends AudioWorkletProcessor {
       this.vemEngines = (msg.vem.tracks || []).map((entry, idx) => {
         const instIndex = { violin: 0, viola: 1, cello: 2, bass: 3 }[entry.instrument] ?? 0;
         const eng = vE.vem_new(this.sr, instIndex);
-        vE.vem_set_seed(eng, 12345);
+        // 每个引擎独立种子（同一段旋律的四把琴不能同相漂移）
+        vE.vem_set_seed(eng, entry.seed ?? 12345 + idx * 7919);
         // 数据（琴体 IR / 弓噪）
         for (const buf of entry.data || []) {
           const bytes = new Uint8Array(buf);
