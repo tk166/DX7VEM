@@ -114,6 +114,7 @@ fn main() {
     let mut bow_trans = Trans { start: 0, end: bow_transition, from: -bow, to: 0.0 };
     let mut released = false;
     let mut sent_note2 = false;
+    let mut has_sounded = false;
 
     for _ in 0..frames {
         // Director: if step%100 == 0 { process_messages() }
@@ -149,6 +150,16 @@ fn main() {
             inst.set_volume(envelope);
             inst.set_bow_position((bow + bow_shift).max(0.0));
             inst.set_vibrato_amplitude(0.01 * vibrato * envelope);
+        }
+
+        // 参考 Director 的 Division::generate：音量为 0 时跳过乐器推进
+        if !has_sounded {
+            if inst.get_volume() > 0.0 {
+                has_sounded = true;
+            } else {
+                mono.push(0.0);
+                continue;
+            }
         }
 
         mono.push(inst.generate(&mut planner));

@@ -1,8 +1,9 @@
-//! 引擎总装：voice 池（每音一个 Instrument）+ 控制率包络/弓位 + 参数平滑 + 总线。
+//! 引擎总装：voice 池（每音一个 Instrument）+ 控制率包络/弓位/频率 + 参数平滑 + 总线。
 //!
 //! 控制率默认 100 采样 @48k（= 480 Hz），与参考实现的 `step%100==0` 对齐；
-//! 包络在控制 tick 上用 raised-cosine 插值，因此同种子、同参数下可与
-//! `ref-instrument` 逐窗口（甚至逐采样）对拍。
+//! 7 种弓法的 transition 时序（起音/弓位归位/滑音/跳弓/拨弦/tremolo）逐条照抄
+//! `Division::note_on` / `update_transitions` 的行为，因此在默认参数下可与参考实现
+//! 逐窗口（甚至逐采样）对拍。
 
 use crate::articulations::Articulation;
 use crate::envelope::EnvelopeParams;
@@ -10,10 +11,11 @@ use crate::fft::FftCache;
 use crate::instrument::{Instrument, InstrumentType};
 use crate::random::Random;
 use crate::smooth::{block_coef, smooth_to, soft_clip};
-use crate::spectrum::TimbreParams;
+use crate::spectrum::{coef_for, TimbreParams};
 
 pub const BLOCK: usize = 64;
 pub const MAX_VOICES: usize = 8;
+const MAX_TRANS: usize = 8;
 
 /// 与参考实现一致的默认种子（`ref-instrument --seed 12345`）。
 pub const DEFAULT_SEED: u32 = 12345;
@@ -21,8 +23,16 @@ pub const DEFAULT_SEED: u32 = 12345;
 /// 单声部 pan = 0.25π，总线缩放 0.01/sqrt(count)（count=1）。
 pub const DIRECTOR_SCALE: f32 = 0.01 * core::f32::consts::FRAC_1_SQRT_2;
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum TransKind {
+    Env,
+    Freq,
+    Bow,
+}
+
 #[derive(Copy, Clone, Debug)]
 struct Trans {
+    kind: TransKind,
     from: f32,
     to: f32,
     start: u64,
@@ -31,18 +41,19 @@ struct Trans {
 
 impl Trans {
     /// raised-cosine，与参考实现 `0.5-0.5*cos(π*fraction)` 同式。
+    /// 返回 `None` 表示这条 transition 还没开始（参考实现此时不改写参数）。
     #[inline]
-    fn value(&self, step: u64) -> f32 {
-        if step <= self.start {
-            return self.from;
+    fn value(&self, step: u64) -> Option<f32> {
+        if step < self.start {
+            return None;
         }
         if step >= self.end {
-            return self.to;
+            return Some(self.to);
         }
         let fraction = (step - self.start) as f32 / (self.end - self.start) as f32;
         let weight2 = 0.5 - 0.5 * (fraction * core::f32::consts::PI).cos();
         let weight1 = 1.0 - weight2;
-        weight1 * self.from + weight2 * self.to
+        Some(weight1 * self.from + weight2 * self.to)
     }
 }
 
@@ -50,8 +61,12 @@ struct ControlCtx {
     bow: f32,
     vibrato_depth: f32,
     bend: f32,
+    /// = (0.05 + 0.95*volume) * bow_pressure
     volume: f32,
+    /// 原始 0..1（tremolo 的公式用这个）
+    volume_raw: f32,
     harmonics: bool,
+    articulation: Articulation,
     vibrato_onset_ms: f32,
     vibrato_onset_ramp_ms: f32,
     sr: f32,
@@ -64,12 +79,17 @@ pub struct Voice {
     pub velocity: f32,
     pub age: u64,
     releasing: bool,
+    articulation: Articulation,
     envelope: f32,
-    env_trans: Option<Trans>,
-    bow_shift: f32,
-    bow_trans: Option<Trans>,
     freq: f32,
+    bow_shift: f32,
+    trans: [Option<Trans>; MAX_TRANS],
     note_on_step: u64,
+    has_sounded: bool,
+    tremolo_start: i64,
+    tremolo_end: i64,
+    tremolo_volume: f32,
+    tremolo_down_bow: bool,
     peak: f32,
     silence_ticks: u32,
 }
@@ -83,17 +103,64 @@ impl Voice {
             velocity: 0.0,
             age: 0,
             releasing: false,
+            articulation: Articulation::Arco,
             envelope: 0.0,
-            env_trans: None,
-            bow_shift: 0.0,
-            bow_trans: None,
             freq: 440.0,
+            bow_shift: 0.0,
+            trans: [None; MAX_TRANS],
             note_on_step: 0,
+            has_sounded: false,
+            tremolo_start: 0,
+            tremolo_end: 0,
+            tremolo_volume: 1.0,
+            tremolo_down_bow: true,
             peak: 0.0,
             silence_ticks: 0,
         }
     }
 
+    fn push_trans(&mut self, t: Trans) {
+        for slot in self.trans.iter_mut() {
+            if slot.is_none() {
+                *slot = Some(t);
+                return;
+            }
+        }
+        // 理论上不会满；应付一下，替换最后一个
+        self.trans[MAX_TRANS - 1] = Some(t);
+    }
+
+    fn add_trans(
+        &mut self,
+        kind: TransKind,
+        delay: u64,
+        duration: u64,
+        from: f32,
+        to: f32,
+        step: u64,
+    ) {
+        let start = step + delay;
+        self.push_trans(Trans {
+            kind,
+            from,
+            to,
+            start,
+            end: start + duration,
+        });
+    }
+
+    /// 参考实现的 `add_envelope_transition`：先删除所有包络 transition。
+    fn add_env_transition(&mut self, duration: u64, to: f32, step: u64) {
+        let from = self.envelope;
+        for t in self.trans.iter_mut() {
+            if matches!(t, Some(t) if t.kind == TransKind::Env) {
+                *t = None;
+            }
+        }
+        self.add_trans(TransKind::Env, 0, duration, from, to, step);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn start(
         &mut self,
         note: i32,
@@ -105,106 +172,281 @@ impl Voice {
         env: &EnvelopeParams,
         articulation: Articulation,
         timbre: TimbreParams,
+        rng: &mut Random,
     ) {
+        let prev_note = self.note;
+        let prev_freq = self.freq;
+
         self.active = true;
         self.note = note;
         self.velocity = velocity;
         self.age = age;
         self.releasing = false;
+        self.articulation = articulation;
         self.note_on_step = step;
+        self.has_sounded = false;
         self.peak = 0.0;
         self.silence_ticks = 0;
-        self.freq = 440.0 * (2.0f32).powf((note - 69) as f32 / 12.0);
+        self.trans = [None; MAX_TRANS];
+        self.freq = midi_to_frequency(note);
+
+        let s48 = |samples: i64| -> u64 {
+            (samples as f32 * ctx.sr / 48000.0).round().max(0.0) as u64
+        };
 
         self.inst.set_timbre(timbre);
         self.inst.set_frequency(self.freq * ctx.bend);
         self.inst.note_on(note, articulation);
 
-        // 参考实现 Arco：非 legato 从 0 起音并把弓位从"贴马"归位；
-        // legato 从当前包络的一半接上（换弓感），弓位不动。
-        let start_env = if legato { 0.5 * self.envelope } else { 0.0 };
-        if !legato {
-            self.bow_shift = -ctx.bow;
-            let settle = env.bow_settle_samples(ctx.sr).max(0) as u64;
-            self.bow_trans = Some(Trans {
-                from: -ctx.bow,
-                to: 0.0,
-                start: step,
-                end: step + settle,
-            });
-        } else {
-            self.bow_trans = None;
+        match articulation {
+            Articulation::Arco | Articulation::Glissando => {
+                if legato && articulation == Articulation::Glissando {
+                    // 滑音：从上一个音高滑到新音高
+                    let interval = (prev_note - note).abs().max(7) as f32;
+                    let slide_time = 200 + (interval * 2000.0 * (1.0 - velocity)) as i64;
+                    let end_frequency = self.freq;
+                    self.freq = prev_freq;
+                    self.inst.set_frequency(self.freq * ctx.bend);
+                    self.add_trans(
+                        TransKind::Freq,
+                        0,
+                        s48(slide_time),
+                        prev_freq,
+                        end_frequency,
+                        step,
+                    );
+                }
+                let attack_time = env.attack_samples(velocity, ctx.sr).max(0) as u64;
+                let start_env = 0.5 * self.envelope;
+                self.envelope = start_env;
+                self.add_trans(TransKind::Env, 0, attack_time, start_env, 1.0, step);
+                if !legato {
+                    self.bow_shift = -ctx.bow;
+                    let settle = env.bow_settle_samples(ctx.sr).max(0) as u64;
+                    self.add_trans(TransKind::Bow, 0, settle, -ctx.bow, 0.0, step);
+                }
+            }
+            Articulation::Marcato => {
+                let attack_time = 1000 + (5000.0 * (1.0 - velocity)) as i64;
+                let peak = 1.0 + 3.0 * velocity;
+                self.add_env_transition(s48(attack_time), peak, step);
+                self.add_trans(
+                    TransKind::Env,
+                    s48(attack_time),
+                    s48(2 * attack_time),
+                    peak,
+                    1.0,
+                    step,
+                );
+                if !legato {
+                    self.bow_shift = -ctx.bow;
+                    let settle = env.bow_settle_samples(ctx.sr).max(0) as u64;
+                    self.add_trans(TransKind::Bow, 0, settle, -ctx.bow, 0.0, step);
+                }
+            }
+            Articulation::Spiccato => {
+                let hold_time = 2750 + (rng.get_int() as i64) % 500;
+                let peak = 0.05 + 4.0 * velocity;
+                self.add_env_transition(0, peak, step);
+                self.envelope = peak;
+                self.add_trans(TransKind::Env, s48(hold_time), 0, peak, 0.0, step);
+
+                // 弓击弦造成瞬时音高偏移
+                let end_frequency = self.freq;
+                let start_frequency = 1.02 * end_frequency;
+                self.freq = start_frequency;
+                self.add_trans(
+                    TransKind::Freq,
+                    0,
+                    s48(2000),
+                    start_frequency,
+                    end_frequency,
+                    step,
+                );
+            }
+            Articulation::Pizzicato | Articulation::ColLegno => {
+                let peak = 1.0 + 15.0 * velocity;
+                self.add_env_transition(0, peak, step);
+                self.envelope = peak;
+                let end_frequency = self.freq;
+                let period = 48000.0 / end_frequency;
+                let hold_time = 101i64.max((2.0 * period) as i64);
+                self.add_trans(TransKind::Env, s48(hold_time), 0, peak, 0.0, step);
+
+                let start_frequency = 1.015 * end_frequency;
+                self.freq = start_frequency;
+                self.add_trans(
+                    TransKind::Freq,
+                    0,
+                    s48(hold_time),
+                    start_frequency,
+                    end_frequency,
+                    step,
+                );
+            }
+            Articulation::Tremolo => {
+                self.add_env_transition(0, 1.0, step);
+                self.envelope = 1.0;
+                let coef = coef_for(self.inst.instrument_type);
+                self.tremolo_start = step as i64;
+                self.tremolo_end = step as i64
+                    + s48(coef.tremolo_length as i64) as i64
+                    + (rng.get_int() as i64) % 500;
+                self.tremolo_volume = 1.0 + 0.5 * rng.get_uniform();
+                self.tremolo_down_bow = true;
+            }
         }
 
-        self.envelope = start_env;
-        let attack = env.attack_samples(velocity, ctx.sr).max(0) as u64;
-        self.env_trans = Some(Trans {
-            from: start_env,
-            to: 1.0,
-            start: step,
-            end: step + attack,
-        });
-
-        // 参考实现在 note_on 时立刻 update_transitions 一次
-        self.inst.set_volume(start_env * ctx.volume);
-        self.inst
-            .set_bow_position((ctx.bow + self.bow_shift).max(0.0));
-        self.inst
-            .set_vibrato_amplitude(0.01 * ctx.vibrato_depth * start_env);
+        // 参考实现在 note_on 末尾会立刻 update_transitions 一次
+        self.update_control(step, ctx, env, rng);
     }
 
-    fn release(&mut self, step: u64, ctx: &ControlCtx, env: &EnvelopeParams, release_rate: f32) {
+    fn release(
+        &mut self,
+        step: u64,
+        ctx: &ControlCtx,
+        env: &EnvelopeParams,
+        release_rate: f32,
+        rng: &mut Random,
+    ) {
         if self.releasing {
             return;
         }
         self.releasing = true;
-        let samples = env.release_samples(release_rate, ctx.sr).max(1) as u64;
-        self.env_trans = Some(Trans {
-            from: self.envelope,
-            to: 0.0,
-            start: step,
-            end: step + samples,
-        });
+        match self.articulation {
+            // 这些弓法在 note_on 时已经排好了衰减，松键不再改动
+            Articulation::Spiccato | Articulation::Pizzicato | Articulation::ColLegno => {}
+            _ => {
+                let release_time = env.release_samples(release_rate, ctx.sr).max(1) as u64;
+                self.add_env_transition(release_time, 0.0, step);
+                self.update_control(step, ctx, env, rng);
+            }
+        }
     }
 
-    fn update_control(&mut self, step: u64, ctx: &ControlCtx) {
+    fn update_control(
+        &mut self,
+        step: u64,
+        ctx: &ControlCtx,
+        _env: &EnvelopeParams,
+        rng: &mut Random,
+    ) {
         if !self.active {
             return;
         }
-        if let Some(t) = self.env_trans {
-            self.envelope = t.value(step);
+
+        let mut volume_changed = false;
+        let mut freq_changed = false;
+        let mut bow_changed = false;
+        for t in self.trans.iter().flatten() {
+            let Some(v) = t.value(step) else { continue };
+            match t.kind {
+                TransKind::Env => {
+                    self.envelope = v;
+                    volume_changed = true;
+                }
+                TransKind::Freq => {
+                    self.freq = v;
+                    freq_changed = true;
+                }
+                TransKind::Bow => {
+                    self.bow_shift = v;
+                    bow_changed = true;
+                }
+            }
         }
-        if let Some(t) = self.bow_trans {
-            self.bow_shift = t.value(step);
+
+        let tremolo = ctx.articulation == Articulation::Tremolo;
+        if tremolo {
+            volume_changed = true;
+            freq_changed = true;
+            bow_changed = true;
         }
-        let env = self.envelope;
-        let vol = ctx.volume * env;
-        self.inst.set_volume(vol);
-        self.inst
-            .set_bow_position((ctx.bow + self.bow_shift).max(0.0));
-        self.inst.set_frequency(self.freq * ctx.bend);
+
+        let coef = coef_for(self.inst.instrument_type);
+        let stepi = step as i64;
+
+        // ---- volume（含 tremolo 的 3 段式） ----
+        if volume_changed {
+            let mut vol = ctx.volume * self.envelope;
+            if tremolo {
+                if stepi > self.tremolo_end {
+                    vol = 0.0;
+                    self.tremolo_volume =
+                        0.5 * (self.tremolo_volume + 1.0 + 0.5 * rng.get_uniform());
+                    let space = (coef.tremolo_space as f32 * ctx.sr / 48000.0) as i64;
+                    if !self.tremolo_down_bow {
+                        self.tremolo_start = stepi + (0.8 * space as f32) as i64;
+                    } else {
+                        self.tremolo_start = stepi + space;
+                    }
+                    let length = (coef.tremolo_length as f32 * ctx.sr / 48000.0) as i64;
+                    let extra = (800.0 * ctx.volume_raw) as i64;
+                    self.tremolo_end =
+                        self.tremolo_start + length + extra + (rng.get_int() as i64) % 500;
+                    self.tremolo_down_bow = !self.tremolo_down_bow;
+                } else if stepi < self.tremolo_start {
+                    vol = 0.0;
+                } else {
+                    let x = (stepi - self.tremolo_start) as f32
+                        / (self.tremolo_end - self.tremolo_start) as f32;
+                    vol *= self.tremolo_volume
+                        * 3.0
+                        * (x - x * x)
+                        * if self.tremolo_down_bow { 1.0 } else { 0.8 };
+                }
+            }
+            self.inst.set_volume(vol);
+
+            let mut vib_scale = 1.0f32;
+            if ctx.vibrato_onset_ms > 0.0 {
+                let t_ms = (step - self.note_on_step) as f32 * 1000.0 / ctx.sr;
+                let ramp = ctx.vibrato_onset_ramp_ms.max(1.0);
+                vib_scale = ((t_ms - ctx.vibrato_onset_ms) / ramp).clamp(0.0, 1.0);
+            }
+            self.inst
+                .set_vibrato_amplitude(0.01 * ctx.vibrato_depth * self.envelope * vib_scale);
+        }
+
+        // ---- frequency ----
+        if freq_changed {
+            let mut freq = self.freq * ctx.bend;
+            if tremolo {
+                let freq_delta = 0.014 * freq * ctx.volume_raw;
+                let low_freq = freq - 0.5 * freq_delta;
+                if stepi < self.tremolo_start {
+                    let x = (self.tremolo_start - stepi) as f32 / coef.tremolo_space as f32;
+                    freq = low_freq + x * freq_delta;
+                } else {
+                    let x = (stepi - self.tremolo_start) as f32
+                        / (self.tremolo_end - self.tremolo_start) as f32;
+                    freq = low_freq + x * freq_delta;
+                }
+            }
+            self.inst.set_frequency(freq);
+        }
+
+        // ---- bow position ----
+        if bow_changed {
+            let mut pos = (ctx.bow + self.bow_shift).max(0.0);
+            if tremolo && stepi > self.tremolo_start && self.tremolo_down_bow {
+                let x = (stepi - self.tremolo_start) as f32
+                    / (self.tremolo_end - self.tremolo_start) as f32;
+                pos *= x;
+            }
+            self.inst.set_bow_position(pos);
+        }
+
         self.inst.set_harmonics(ctx.harmonics);
 
-        // 揉弦：默认 onset=0 → 与参考实现完全一致
-        let mut vibrato_scale = 1.0f32;
-        if ctx.vibrato_onset_ms > 0.0 {
-            let t_ms = (step - self.note_on_step) as f32 * 1000.0 / ctx.sr;
-            let ramp = ctx.vibrato_onset_ramp_ms.max(1.0);
-            vibrato_scale = ((t_ms - ctx.vibrato_onset_ms) / ramp).clamp(0.0, 1.0);
-        }
-        self.inst
-            .set_vibrato_amplitude(0.01 * ctx.vibrato_depth * env * vibrato_scale);
-
         // 释放后彻底静音就回收槽位
-        if self.releasing {
-            if self.peak < 1e-5 {
-                self.silence_ticks += 1;
-            } else {
-                self.silence_ticks = 0;
-            }
+        if self.releasing && self.peak < 1e-5 {
+            self.silence_ticks += 1;
             if self.silence_ticks >= 24 {
                 self.active = false;
             }
+        } else if self.peak >= 1e-5 {
+            self.silence_ticks = 0;
         }
         self.peak = 0.0;
     }
@@ -255,7 +497,9 @@ impl Engine {
         let mut e = Self {
             sample_rate,
             instrument_type,
-            voices: core::array::from_fn(|_| Voice::new(0, sample_rate, instrument_type, false, 0)),
+            voices: core::array::from_fn(|_| {
+                Voice::new(0, sample_rate, instrument_type, false, 0)
+            }),
             fft: FftCache::new(),
             next_age: 0,
             step: 0,
@@ -290,6 +534,9 @@ impl Engine {
             rng: Random::with_seed(DEFAULT_SEED),
         };
         e.rebuild_voices();
+        // 与参考实现 Division 的随机序列对齐：初始化时先取一次 uniform（分配噪声起点用）
+        e.rng.reset(e.seed);
+        e.rng.get_uniform();
         e
     }
 
@@ -306,6 +553,7 @@ impl Engine {
         self.next_age = 0;
         self.gain = 1.0;
         self.rng.reset(self.seed);
+        self.rng.get_uniform();
         self.rebuild_voices();
     }
 
@@ -337,7 +585,9 @@ impl Engine {
             vibrato_depth: self.vibrato_depth,
             bend: self.bend,
             volume: (0.05 + 0.95 * self.volume) * self.bow_pressure,
+            volume_raw: self.volume,
             harmonics: self.harmonics,
+            articulation: self.articulation,
             vibrato_onset_ms: self.envelope.vibrato_onset_ms,
             vibrato_onset_ramp_ms: self.envelope.vibrato_onset_ramp_ms,
             sr: self.sample_rate,
@@ -349,7 +599,6 @@ impl Engine {
         let mut slot = None;
         let mut legato = false;
         if !self.polyphonic {
-            // 参考实现默认单声部：所有音都进 division 0（同一 Instrument，换音时旧谱转尾巴）
             slot = Some(0);
             legato = self.voices[0].active && !self.voices[0].releasing;
         }
@@ -383,6 +632,9 @@ impl Engine {
         self.next_age += 1;
         let ctx = self.ctx();
         let slot = slot.unwrap();
+        let env = self.envelope;
+        let art = self.articulation;
+        let timbre = self.timbre;
         self.voices[slot].start(
             note,
             velocity,
@@ -390,9 +642,10 @@ impl Engine {
             age,
             legato,
             &ctx,
-            &self.envelope,
-            self.articulation,
-            self.timbre,
+            &env,
+            art,
+            timbre,
+            &mut self.rng,
         );
     }
 
@@ -403,7 +656,7 @@ impl Engine {
         let env = self.envelope;
         for v in self.voices.iter_mut() {
             if v.active && !v.releasing && v.note == note {
-                v.release(step, &ctx, &env, release_rate);
+                v.release(step, &ctx, &env, release_rate, &mut self.rng);
             }
         }
     }
@@ -415,7 +668,7 @@ impl Engine {
         let env = self.envelope;
         for v in self.voices.iter_mut() {
             if v.active && !v.releasing {
-                v.release(step, &ctx, &env, release_rate);
+                v.release(step, &ctx, &env, release_rate, &mut self.rng);
             }
         }
     }
@@ -440,17 +693,27 @@ impl Engine {
         let amp = self.gain * self.master * self.output_gain;
         let control = self.control_samples;
         let ctx = self.ctx();
+        let env = self.envelope;
         let fft = &mut self.fft;
+        let rng = &mut self.rng;
         for i in 0..n {
             self.step += 1;
             if self.step % control == 0 {
                 for v in self.voices.iter_mut() {
-                    v.update_control(self.step, &ctx);
+                    v.update_control(self.step, &ctx, &env, rng);
                 }
             }
             let mut sum = 0.0f32;
             for v in self.voices.iter_mut() {
                 if v.active {
+                    // 参考实现 Division::generate：音量为 0 时直接跳过，不推进乐器内部状态
+                    if !v.has_sounded {
+                        if v.inst.get_volume() > 0.0 {
+                            v.has_sounded = true;
+                        } else {
+                            continue;
+                        }
+                    }
                     let s = v.inst.generate(fft);
                     let a = s.abs();
                     if a > v.peak {
@@ -467,6 +730,11 @@ impl Engine {
             out_r[i] = s;
         }
     }
+}
+
+#[inline]
+pub fn midi_to_frequency(note: i32) -> f32 {
+    440.0 * (2.0f32).powf((note - 69) as f32 / 12.0)
 }
 
 #[cfg(test)]
@@ -540,5 +808,44 @@ mod tests {
         let la = render_seconds(&mut a, 0.2);
         let lb = render_seconds(&mut b, 0.2);
         assert_ne!(la, lb);
+    }
+
+    #[test]
+    fn all_articulations_produce_sound() {
+        for &art in &[
+            Articulation::Arco,
+            Articulation::Marcato,
+            Articulation::Glissando,
+            Articulation::Spiccato,
+            Articulation::Pizzicato,
+            Articulation::ColLegno,
+            Articulation::Tremolo,
+        ] {
+            let mut e = Engine::new(48000.0, InstrumentType::Violin);
+            e.output_gain = 1.0;
+            e.articulation = art;
+            e.note_on(69, 0.8);
+            let l = render_seconds(&mut e, 0.5);
+            let peak = l.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            assert!(peak > 1e-4, "{} peak={peak}", art.name());
+            assert!(l.iter().all(|v| v.is_finite()), "{} 有 NaN", art.name());
+        }
+    }
+
+    #[test]
+    fn spiccato_and_pizzicato_decay_without_note_off() {
+        for &art in &[Articulation::Spiccato, Articulation::Pizzicato] {
+            let mut e = Engine::new(48000.0, InstrumentType::Violin);
+            e.output_gain = 1.0;
+            e.articulation = art;
+            e.note_on(69, 0.8);
+            let l = render_seconds(&mut e, 2.0);
+            let head = l[..4800].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            let tail = l[l.len() - 4800..]
+                .iter()
+                .fold(0.0f32, |m, v| m.max(v.abs()));
+            assert!(head > 1e-3, "{} head={head}", art.name());
+            assert!(tail < head * 1e-3, "{} tail={tail} head={head}", art.name());
+        }
     }
 }

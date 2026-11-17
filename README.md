@@ -36,7 +36,7 @@ node scripts/vem-metrics.mjs out/ref-69.wav out/vem-69.wav --from 0.5 --to 3.5 -
 |---|---|
 | M0 骨架 + 参考真值 + 对拍管线 | ✅ |
 | M1 单音还原（谱合成 + 自写 IFFT） | ✅ |
-| M2 演奏性（7 种弓法/弓位/揉弦） | ⬜ |
+| M2 演奏性（7 种弓法/弓位/揉弦） | ✅ |
 | M3 琴体 IR + 总线 FX | ⬜ |
 | M4 接数据、CH3 单轨替换 | ⬜ |
 | M5 Web/AudioWorklet 集成 | ⬜ |

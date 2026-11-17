@@ -49,6 +49,9 @@ cargo run --release --manifest-path vem/Cargo.toml --bin render -- `
 # M1 全套验收（13 个用例，FAIL 时退出码 1）
 powershell -ExecutionPolicy Bypass -File scripts/vem-m1-accept.ps1
 
+# M2 全套验收（7 种弓法 + 滑音，FAIL 时退出码 1）
+powershell -ExecutionPolicy Bypass -File scripts/vem-m2-accept.ps1
+
 # 参考实现（首次会 clone + 编译）
 powershell -ExecutionPolicy Bypass -File vem/fetch-reference.ps1
 .\vem\reference\target\release\ref-instrument.exe `
@@ -108,7 +111,7 @@ void  vem_free_mem(uint8_t* ptr, size_t bytes);
 |---|---|---|
 | M0 骨架 + 真值 + 对拍管线 | ✅ | wasm 33 KB / imports 0；参考渲染可复现（`--seed`） |
 | M1 单音还原（谱合成 + 自写 IFFT） | ✅ | 13 用例全 PASS：余弦 1.0000、电平 0.00 dB、包络 1.0000、逐采样 SNR ≈136 dB；wasm 64 KB |
-| M2 演奏性 | ⬜ | 7 种弓法 / 换弓 / 揉弦渐入（参数已就位） |
+| M2 演奏性 | ✅ | 7 种弓法 + 滑音全 PASS：余弦 1.0000、逐采样 SNR ≈136 dB |
 | M3 琴体 + 总线 | ⬜ | 琴体 IR / 压缩 / 混响 / 弓噪 |
 | M4 单轨替换 | ⬜ | CH3 旋律 + 衰减尾巴 |
 | M5 Web 集成 | ⬜ | AudioWorklet 适配层 + UI |

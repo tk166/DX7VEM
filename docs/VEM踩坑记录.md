@@ -158,3 +158,70 @@ self.add_transition(0, attack_time, EnvelopeChange { start_envelope, end_envelop
 逐采样 SNR **135.5–137.2 dB**（差值来自 FFT 舍入，不是算法差异）。
 wasm：**64.2 KB**、imports = 0。
 
+---
+
+# M2（演奏性）阶段
+
+## 15. `Division::generate` 在音量为 0 时**跳过**乐器推进
+
+**症状**：M2 第一次对拍，arco 的电平/频谱都对，但 SNR 是负数、最佳相关位移约 -250 采样；
+频谱余弦 0.997、基频差 1.6 cent。
+
+**根因**：参考实现的 `Division::generate`：
+
+```rust
+if self.instruments[0].get_volume() > 0.0 { self.steps_until_off = 10000; }
+if self.steps_until_off == 0 { return (0.0, 0.0); }   // ← 直接返回，乐器一帧都不生成
+```
+
+起音前 100 个采样（音量还是 0）**根本没有调用 `Instrument::generate`**，
+所以乐器的周期边界、揉弦相位、频率漂移都比"从 0 开始生成静音"晚 100 采样。
+我们的引擎一开始是每采样都生成 → 揉弦轨迹从此分叉。
+
+**修法**：`Voice.has_sounded` 门：音量为 0 且还没响过时跳过 `inst.generate`。
+`ref-instrument` 也必须加同样的门，否则 M1 与 M2 的真值会互相矛盾。
+
+## 16. transition “还没开始”时不能改写参数
+
+**症状**：marcato 的包络前 20 ms 直接跳到峰值（3.4），参考却从 0 慢慢起；
+包络相关 0.975，失败。
+
+**根因**：marcato 有**两段**包络 transition：`0→attack` 升到 peak，`attack→3×attack` 回落到 1。
+我们的插值函数在 `step < start` 时返回 `from`，于是第二段在**起点前**就把包络写成了 peak。
+参考实现的 `update_transitions` 只在 `j >= transition.start` 时才写：
+
+```rust
+if j >= transition.start {  /* 才计算 weight 并赋值 */ }
+```
+
+**修法**：`Trans::value()` 返回 `Option<f32>`，未开始返回 `None`，调用方跳过。
+Arco 只有一段且从 0 开始，所以 M1 没暴露这个问题。
+
+## 17. ColLegno 的弓噪不受 `bow_noise` 控制
+
+```rust
+let noise_scale = match articulation {
+    ColLegno => director.bow_noise_scale,          // ← 没乘 bow_noise
+    Tremolo => 1.5*scale*bow_noise,
+    _ => scale*bow_noise,
+};
+```
+
+所以 `ref-render --bow-noise 0` 对 collegno **无效**，对拍会多出 -3 dB 的噪声层。
+给参考加了另一个开发期开关 `VEM_NOISE=0`（与 `VEM_BODY=0` 同一处注入），对拍时两个都关。
+
+## 18. M2 对拍结果
+
+真值 = `ref-render`（Director 全链路）+ `VEM_BODY=0` + `VEM_NOISE=0`：
+
+| 用例 | 频谱余弦 | SNR |
+|---|---|---|
+| arco / marcato | 1.0000 | 136.5 / 136.4 dB |
+| glissando 69→76 @0.75s | 1.0000 | 135.7 dB |
+| spiccato / pizzicato / collegno | 1.0000 | 136.4 / 137.0 / 136.6 dB |
+| tremolo（violin / cello） | 1.0000 | 135.6 / 136.1 dB |
+| viola pizzicato / bass marcato | 1.0000 | 136.2 / 135.1 dB |
+
+wasm：**66.9 KB**、imports = 0。
+
+

@@ -38,6 +38,9 @@ fn main() {
     let args = Args::parse();
     let itype = parse_instrument(&args.string("instrument", "violin"));
     let note = args.i32("note", 69);
+    let note2 = args.i32("note2", note);
+    let has_note2 = args.raw("note2").is_some();
+    let note2_at = args.f32("note2-at", 1.5).max(0.0);
     let dur = args.f32("dur", 3.0).max(0.0);
     let tail = args.f32("tail", 1.0).max(0.0);
     let vel = args.f32("vel", 0.8).clamp(0.0, 1.0);
@@ -66,9 +69,17 @@ fn main() {
     let mut left = Vec::with_capacity(frames);
     let mut right = Vec::with_capacity(frames);
     let mut sent_off = false;
+    let mut sent_note2 = false;
+    let note2_frame = (note2_at * sr) as i64;
     for i in 0..frames {
+        if !sent_note2 && has_note2 && i as i64 >= note2_frame && i % 100 == 0 {
+            // legato 换音：不发 NoteOff
+            tx.send(Message::NoteOn { note_index: note2, velocity: vel }).unwrap();
+            sent_note2 = true;
+        }
         if !sent_off && i as i64 >= note_off_step && i % 100 == 0 {
-            tx.send(Message::NoteOff { note_index: note }).unwrap();
+            let current = if has_note2 && sent_note2 { note2 } else { note };
+            tx.send(Message::NoteOff { note_index: current }).unwrap();
             sent_off = true;
         }
         let (l, r) = director.generate();

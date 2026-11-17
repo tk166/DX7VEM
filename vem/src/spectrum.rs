@@ -18,6 +18,9 @@ pub struct VoiceCoef {
     /// 内部过采样倍率（小提琴 2×，其余 1×）
     pub oversample: f32,
     pub phase_shift: f32,
+    /// tremolo 一个弓程的长度/间隔（采样 @48k）
+    pub tremolo_length: i32,
+    pub tremolo_space: i32,
 }
 
 pub fn coef_for(t: InstrumentType) -> VoiceCoef {
@@ -32,6 +35,8 @@ pub fn coef_for(t: InstrumentType) -> VoiceCoef {
             pizzicato_exponent: 20,
             oversample: 2.0,
             phase_shift: 0.65,
+            tremolo_length: 4100,
+            tremolo_space: 200,
         },
         InstrumentType::Viola => VoiceCoef {
             vibrato_low: 5.15,
@@ -43,6 +48,8 @@ pub fn coef_for(t: InstrumentType) -> VoiceCoef {
             pizzicato_exponent: 20,
             oversample: 1.0,
             phase_shift: 0.35,
+            tremolo_length: 4600,
+            tremolo_space: 200,
         },
         InstrumentType::Cello => VoiceCoef {
             vibrato_low: 5.0,
@@ -54,6 +61,8 @@ pub fn coef_for(t: InstrumentType) -> VoiceCoef {
             pizzicato_exponent: 30,
             oversample: 1.0,
             phase_shift: 0.0,
+            tremolo_length: 4600,
+            tremolo_space: 400,
         },
         InstrumentType::Bass => VoiceCoef {
             vibrato_low: 4.9,
@@ -65,6 +74,8 @@ pub fn coef_for(t: InstrumentType) -> VoiceCoef {
             pizzicato_exponent: 40,
             oversample: 1.0,
             phase_shift: 0.0,
+            tremolo_length: 4500,
+            tremolo_space: 1000,
         },
     }
 }
