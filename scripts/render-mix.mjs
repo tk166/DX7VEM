@@ -17,7 +17,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
@@ -72,6 +72,16 @@ function loadEvents(path) {
 }
 
 const { events, duration: notesDuration } = loadEvents(notesPath);
+// 可选：演奏起伏（与网页共用同一模块/同一份配置）
+if (has("--humanize")) {
+  const humPath = opt("--humanize", join(root, "web/data/humanize.json"));
+  const hum = JSON.parse(readFileSync(humPath, "utf8"));
+  const { humanizeEvents } = await import(pathToFileURL(join(root, "web/humanize.js")).href);
+  const h = humanizeEvents({ events, duration: notesDuration }, hum);
+  events.length = 0;
+  events.push(...h.events);
+  console.log(`humanize: ${humPath}（种子 ${hum.seed}）`);
+}
 const tracks = JSON.parse(readFileSync(tracksPath, "utf8"));
 const patches = readFileSync(patchesPath);
 const mix = JSON.parse(readFileSync(mixPath, "utf8"));
@@ -188,28 +198,52 @@ function msfaChannelStem(ch) {
 // ---------------------------------------------------------------- VEM
 
 function applyVemParams(eng, entry, idx) {
+  const p = entry.params || {};
   vem.vem_set_seed(eng, entry.seed ?? 12345 + idx * 7919);
   vem.vem_set_master(eng, master);
   vem.vem_set_gain(eng, 1);
   vem.vem_set_polyphonic(eng, entry.polyphonic ? 1 : 0);
-  vem.vem_set_articulation(eng, ["arco", "marcato", "glissando", "spiccato", "pizzicato", "collegno", "tremolo"].indexOf(entry.art || "arco"));
-  vem.vem_set_bow(eng, 0.5, 1);
-  vem.vem_set_vibrato(eng, 0.4, 5.2);
-  vem.vem_set_body(eng, BODY_MIX[entry.instrument] ?? 0.18, 0.6);
-  vem.vem_set_bow_noise(eng, 1, 0.5);
-  const melody = (entry.preset || preset) === "melody" || explicitEnv;
-  const dx = (entry.preset || preset) === "melody" && !explicitEnv;
-  if (melody) {
+  vem.vem_set_articulation(eng, p.art ?? ["arco", "marcato", "glissando", "spiccato", "pizzicato", "collegno", "tremolo"].indexOf(entry.art || "arco"));
+  vem.vem_set_bow(eng, p.bow ?? 0.5, p.pressure ?? 1);
+  vem.vem_set_vibrato(eng, p.vibrato ?? 0.4, p.vibratoRate ?? 5.2);
+  vem.vem_set_body(eng, p.bodyMix ?? BODY_MIX[entry.instrument] ?? 0.18, 0.6);
+  vem.vem_set_bow_noise(eng, p.bowNoiseOn === 0 ? 0 : 1, p.bowNoise ?? 0.5);
+  vem.vem_set_legato(
+    eng,
+    p.legatoStart ?? 0.5,
+    p.legatoRampMs ?? 0,
+    p.legatoAccent ?? 0,
+    p.legatoBoost ?? 0,
+    p.legatoBoostMs ?? 25
+  );
+  const explicit = ["--attack-ms", "--attack-vel-ms", "--release-ms", "--release-slow-ms", "--bow-settle-ms", "--vib-onset-ms"].some((k) => argv.includes(k));
+  if (p.attackMs !== undefined && !explicit) {
     vem.vem_set_envelope(
       eng,
-      Number(opt("--attack-ms", dx ? 8 : 20.833)),
-      Number(opt("--attack-vel-ms", dx ? 60 : 625)),
-      Number(opt("--release-ms", dx ? 60 : 20.833)),
-      Number(opt("--release-slow-ms", dx ? 120 : 208.333)),
-      Number(opt("--bow-settle-ms", 208.333)),
-      Number(opt("--vib-onset-ms", dx ? 120 : 0)),
+      p.attackMs,
+      p.attackVelMs ?? 60,
+      p.releaseMs ?? 60,
+      p.releaseSlowMs ?? 120,
+      p.bowSettleMs ?? 208.333,
+      p.vibOnsetMs ?? 0,
       60
     );
+    vem.vem_set_release_rate(eng, p.releaseRate ?? 0.5);
+  } else {
+    const melody = (entry.preset || preset) === "melody" || explicitEnv;
+    const dx = (entry.preset || preset) === "melody" && !explicitEnv;
+    if (melody) {
+      vem.vem_set_envelope(
+        eng,
+        Number(opt("--attack-ms", dx ? 8 : 20.833)),
+        Number(opt("--attack-vel-ms", dx ? 60 : 625)),
+        Number(opt("--release-ms", dx ? 60 : 20.833)),
+        Number(opt("--release-slow-ms", dx ? 120 : 208.333)),
+        Number(opt("--bow-settle-ms", 208.333)),
+        Number(opt("--vib-onset-ms", dx ? 120 : 0)),
+        60
+      );
+    }
   }
 }
 

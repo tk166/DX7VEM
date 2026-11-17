@@ -19,6 +19,16 @@ pub struct EnvelopeParams {
     pub vibrato_onset_ms: f32,
     /// 揉弦渐入过渡（ms）
     pub vibrato_onset_ramp_ms: f32,
+    /// legato 换音时接续多少当前包络（参考实现 = 0.5，越大越"不断音"）
+    pub legato_start: f32,
+    /// legato 换音后回到 1 的时间（ms，0 = 使用起音时间）
+    pub legato_ramp_ms: f32,
+    /// legato 换音的小上冲（0 = 关，0.03 ≈ +3%）
+    pub legato_accent: f32,
+    /// legato 换音后短暂提高激励，补偿"新频谱从零重建"的凹陷（0 = 关）
+    pub legato_boost: f32,
+    /// 激励补偿的衰减时间（ms）
+    pub legato_boost_ms: f32,
 }
 
 impl Default for EnvelopeParams {
@@ -32,6 +42,11 @@ impl Default for EnvelopeParams {
             bow_settle: 10000.0,
             vibrato_onset_ms: 0.0,
             vibrato_onset_ramp_ms: 60.0,
+            legato_start: 0.5,
+            legato_ramp_ms: 0.0,
+            legato_accent: 0.0,
+            legato_boost: 0.0,
+            legato_boost_ms: 25.0,
         }
     }
 }

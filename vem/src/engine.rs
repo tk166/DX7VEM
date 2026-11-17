@@ -91,6 +91,8 @@ pub struct Voice {
     trans: [Option<Trans>; MAX_TRANS],
     note_on_step: u64,
     has_sounded: bool,
+    legato_boost: f32,
+    legato_boost_ms: f32,
     tremolo_start: i64,
     tremolo_end: i64,
     tremolo_volume: f32,
@@ -116,6 +118,8 @@ impl Voice {
             trans: [None; MAX_TRANS],
             note_on_step: 0,
             has_sounded: false,
+            legato_boost: 0.0,
+            legato_boost_ms: 25.0,
             tremolo_start: 0,
             tremolo_end: 0,
             tremolo_volume: 1.0,
@@ -225,9 +229,25 @@ impl Voice {
                     );
                 }
                 let attack_time = env.attack_samples(velocity, ctx.sr).max(0) as u64;
-                let start_env = 0.5 * self.envelope;
+                let start_env = if legato {
+                    env.legato_start.clamp(0.0, 1.0) * self.envelope
+                } else {
+                    0.0
+                };
+                let from = if legato && env.legato_accent > 0.0 {
+                    start_env * (1.0 + env.legato_accent)
+                } else {
+                    start_env
+                };
+                let ramp = if legato && env.legato_ramp_ms > 0.0 {
+                    (env.legato_ramp_ms * ctx.sr / 1000.0).max(1.0) as u64
+                } else {
+                    attack_time
+                };
                 self.envelope = start_env;
-                self.add_trans(TransKind::Env, 0, attack_time, start_env, 1.0, step);
+                self.add_trans(TransKind::Env, 0, ramp, from, 1.0, step);
+                self.legato_boost = if legato { env.legato_boost.max(0.0) } else { 0.0 };
+                self.legato_boost_ms = env.legato_boost_ms.max(1.0);
                 if !legato {
                     self.bow_shift = -ctx.bow;
                     let settle = env.bow_settle_samples(ctx.sr).max(0) as u64;
@@ -405,6 +425,13 @@ impl Voice {
                 }
             }
             self.inst.set_volume(vol);
+
+            // legato 换音后的激励补偿：填掉"新频谱从零重建"的短暂凹陷
+            if self.legato_boost > 0.0 && !self.releasing {
+                let t_ms = (step.saturating_sub(self.note_on_step)) as f32 * 1000.0 / ctx.sr;
+                let boost = 1.0 + self.legato_boost * (-t_ms / self.legato_boost_ms).exp();
+                self.inst.set_volume(vol * boost);
+            }
 
             let mut vib_scale = 1.0f32;
             if ctx.vibrato_onset_ms > 0.0 {

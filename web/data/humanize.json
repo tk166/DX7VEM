@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "seed": 20261117,
+  "timingMs": 12,
+  "velocity": 6,
+  "phraseTempoMs": 22,
+  "phraseDynamics": 0.06,
+  "beatAccent": 0.0
+}

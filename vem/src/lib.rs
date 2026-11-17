@@ -1,4 +1,4 @@
-//! # VEM 弦乐引擎
+﻿//! # VEM 弦乐引擎
 //!
 //! 谱激励 + 谐波阻尼 + 周期重合成（**独立实现**；算法思路见
 //! `docs/开发计划-VEM弦乐引擎.md`，行为对照只使用 `vem/reference/` 下的上游代码）。
@@ -166,6 +166,28 @@ pub extern "C" fn vem_set_release_rate(p: *mut c_void, rate: f32) {
         return;
     }
     engine_mut(p).release_rate = rate.clamp(0.0, 1.0);
+}
+
+/// legato 换音行为：start = 接续比例（参考实现 0.5）、ramp_ms = 回到 1 的时间（0=用起音）、
+/// accent = 小上冲、boost = 换音后的激励补偿（0=关）、boost_ms = 补偿衰减时间
+#[no_mangle]
+pub extern "C" fn vem_set_legato(
+    p: *mut c_void,
+    start: f32,
+    ramp_ms: f32,
+    accent: f32,
+    boost: f32,
+    boost_ms: f32,
+) {
+    if p.is_null() {
+        return;
+    }
+    let e = engine_mut(p);
+    e.envelope.legato_start = start.clamp(0.0, 1.0);
+    e.envelope.legato_ramp_ms = ramp_ms.max(0.0);
+    e.envelope.legato_accent = accent.clamp(0.0, 0.2);
+    e.envelope.legato_boost = boost.clamp(0.0, 8.0);
+    e.envelope.legato_boost_ms = boost_ms.clamp(1.0, 200.0);
 }
 
 #[no_mangle]

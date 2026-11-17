@@ -1,4 +1,4 @@
-//! 原生渲染 CLI：产出与参考实现同参数可对拍的 WAV。
+﻿//! 原生渲染 CLI：产出与参考实现同参数可对拍的 WAV。
 //!
 //! 用法：
 //!   cargo run --release --bin render -- --instrument violin --note 69 --dur 3 --out out/vem-69.wav
@@ -173,6 +173,11 @@ fn main() {
     }
     engine.envelope.vibrato_onset_ms = args.f32("vib-onset-ms", 0.0).max(0.0);
     engine.envelope.vibrato_onset_ramp_ms = args.f32("vib-onset-ramp-ms", 60.0).max(0.0);
+    engine.envelope.legato_start = args.f32("legato-start", 0.5).clamp(0.0, 1.0);
+    engine.envelope.legato_ramp_ms = args.f32("legato-ramp-ms", 0.0).max(0.0);
+    engine.envelope.legato_accent = args.f32("legato-accent", 0.0).clamp(0.0, 0.2);
+    engine.envelope.legato_boost = args.f32("legato-boost", 0.0).clamp(0.0, 8.0);
+    engine.envelope.legato_boost_ms = args.f32("legato-boost-ms", 25.0).clamp(1.0, 200.0);
 
     let mut timbre = TimbreParams::default();
     timbre.damping_scale = args.f32("damping", 1.0);

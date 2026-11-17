@@ -47,14 +47,20 @@ function setStatus(text, kind = "") {
 async function boot() {
   try {
     setStatus("加载数据…", "busy");
-    const [tracks, mix, patches, notes, vemConfig, defaults] = await Promise.all([
+    const [tracks, mix, patches, notesBuf, vemConfig, defaults, humCfg] = await Promise.all([
       fetch("data/tracks.json").then((r) => r.json()),
       fetch("data/mix.json").then((r) => r.json()),
       fetch("data/patches.bin").then((r) => r.arrayBuffer()),
       fetch("data/notes.bin").then((r) => r.arrayBuffer()),
       fetch("data/vem-tracks.json").then((r) => (r.ok ? r.json() : [])).catch(() => []),
       fetch("data/mix-defaults.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("data/humanize.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ]);
+    let notes = notesBuf;
+    if (humCfg && humCfg.enabled !== false) {
+      const { humanizeBuffer } = await import("./humanize.js");
+      notes = humanizeBuffer(notesBuf, humCfg);
+    }
     vemTracks = vemConfig;
     if (defaults) mixDefaults = defaults;
     duration = mix.duration;
@@ -222,6 +228,9 @@ function buildVemUI() {
     addVemRow(panel, idx, "vibrato", "揉弦深度", 0, 1.5, 0.01, p.vibrato ?? 0.4, (v) => v.toFixed(2));
     addVemRow(panel, idx, "vibOnsetMs", "揉弦渐入", 0, 500, 10, p.vibOnsetMs ?? 120, (v) => `${v} ms`);
     addVemRow(panel, idx, "attackMs", "起音", 2, 300, 1, p.attackMs ?? 8, (v) => `${v} ms`);
+    addVemRow(panel, idx, "legatoStart", "连弓接续", 0, 1, 0.01, p.legatoStart ?? 0.5, (v) => v.toFixed(2));
+    addVemRow(panel, idx, "legatoRampMs", "换音过渡", 0, 100, 1, p.legatoRampMs ?? 0, (v) => `${v} ms`);
+    addVemRow(panel, idx, "legatoBoost", "换音补偿", 0, 8, 0.1, p.legatoBoost ?? 0, (v) => v.toFixed(1));
     addVemRow(panel, idx, "bowNoise", "弓噪", 0, 1, 0.01, p.bowNoise ?? 0.5, (v) => `${Math.round(v * 100)}%`, (v) => ({ bowNoiseOn: v > 0 ? 1 : 0 }));
     addVemRow(panel, idx, "bodyMix", "琴体共振", 0, 0.6, 0.01, p.bodyMix ?? 0.18, (v) => v.toFixed(2));
 

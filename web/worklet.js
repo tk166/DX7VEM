@@ -257,6 +257,7 @@ class MsfaProcessor extends AudioWorkletProcessor {
     E.vem_set_release_rate(eng, p.releaseRate);
     E.vem_set_body(eng, p.bodyMix, 0.6);
     E.vem_set_bow_noise(eng, p.bowNoiseOn === 0 ? 0 : 1, p.bowNoise);
+    E.vem_set_legato(eng, p.legatoStart ?? 0.5, p.legatoRampMs ?? 0, p.legatoAccent ?? 0, p.legatoBoost ?? 0, p.legatoBoostMs ?? 25);
   }
 
   // 把 FX 参数下发给 wasm（bypass 时全部旁通）

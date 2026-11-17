@@ -23,7 +23,12 @@
       "releaseRate": 0.5,
       "bodyMix": 0.21,
       "bowNoise": 0.5,
-      "bowNoiseOn": 1
+      "bowNoiseOn": 1,
+      "legatoStart": 0.95,
+      "legatoRampMs": 15,
+      "legatoAccent": 0,
+      "legatoBoost": 0,
+      "legatoBoostMs": 15
     }
   },
   {
@@ -50,7 +55,12 @@
       "releaseRate": 0.5,
       "bodyMix": 0.21,
       "bowNoise": 0.5,
-      "bowNoiseOn": 1
+      "bowNoiseOn": 1,
+      "legatoStart": 0.95,
+      "legatoRampMs": 15,
+      "legatoAccent": 0,
+      "legatoBoost": 0,
+      "legatoBoostMs": 15
     }
   },
   {
@@ -77,7 +87,12 @@
       "releaseRate": 0.5,
       "bodyMix": 0.21,
       "bowNoise": 0.5,
-      "bowNoiseOn": 1
+      "bowNoiseOn": 1,
+      "legatoStart": 0.95,
+      "legatoRampMs": 15,
+      "legatoAccent": 0,
+      "legatoBoost": 0,
+      "legatoBoostMs": 15
     }
   },
   {
@@ -104,7 +119,12 @@
       "releaseRate": 0.5,
       "bodyMix": 0.21,
       "bowNoise": 0.5,
-      "bowNoiseOn": 1
+      "bowNoiseOn": 1,
+      "legatoStart": 0.95,
+      "legatoRampMs": 15,
+      "legatoAccent": 0,
+      "legatoBoost": 0,
+      "legatoBoostMs": 15
     }
   }
 ]
