@@ -244,6 +244,7 @@ class MsfaProcessor extends AudioWorkletProcessor {
       this.evData[i * 4 + 3] = dv.getUint8(o + 7);
     }
     this.eventCount = n;
+    this.evIndex = 0;
     // 每个 note-on 到"同通道下一个 note-on"的时间（ms），用于换音前渐弱
     this.leadMs = new Float32Array(n);
     const nextOn = new Array(16).fill(-1);
