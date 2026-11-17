@@ -26,12 +26,35 @@ git -C $dest reset --hard --quiet $Commit
 
 Write-Host "apply local overrides（不改上游算法，只新增 bin + 固定种子）"
 $ov = Join-Path $root "reference-overrides"
-Copy-Item (Join-Path $ov "synth/Cargo.toml") (Join-Path $dest "synth/Cargo.toml") -Force
-Copy-Item (Join-Path $ov "synth/src/random.rs") (Join-Path $dest "synth/src/random.rs") -Force
 New-Item -ItemType Directory -Force (Join-Path $dest "synth/src/bin/common") | Out-Null
 Copy-Item (Join-Path $ov "synth/src/bin/ref_instrument.rs") (Join-Path $dest "synth/src/bin/ref_instrument.rs") -Force
 Copy-Item (Join-Path $ov "synth/src/bin/ref_render.rs") (Join-Path $dest "synth/src/bin/ref_render.rs") -Force
 Copy-Item (Join-Path $ov "synth/src/bin/common/mod.rs") (Join-Path $dest "synth/src/bin/common/mod.rs") -Force
+
+# synth/Cargo.toml 追加两个 [[bin]]（不覆盖上游文件，保持仓库无 LGPL 拷贝）
+$manifest = Join-Path $dest "synth/Cargo.toml"
+$text = [IO.File]::ReadAllText($manifest)
+if (-not $text.Contains('name = "ref-instrument"')) {
+    $text += "`n[[bin]]`nname = `"ref-instrument`"`npath = `"src/bin/ref_instrument.rs`"`n`n[[bin]]`nname = `"ref-render`"`npath = `"src/bin/ref_render.rs`"`n"
+    [IO.File]::WriteAllText($manifest, $text, (New-Object Text.UTF8Encoding $false))
+}
+
+# random.rs：允许 VEM_SEED 固定种子（字符串注入，不把 LGPL 源码放进本仓库）
+$rnd = Join-Path $dest "synth/src/random.rs"
+$rt = [IO.File]::ReadAllText($rnd)
+if (-not $rt.Contains("VEM_SEED")) {
+    $anchor = "    pub fn new() -> Self {"
+    if (-not $rt.Contains($anchor)) { throw "random.rs 结构变了，无法注入 VEM_SEED" }
+    $inject = "    pub fn new() -> Self {`n" +
+              "        // [local override] VEM_SEED 固定种子（开发期对拍用）`n" +
+              "        if let Ok(text) = std::env::var(`"VEM_SEED`") {`n" +
+              "            if let Ok(seed) = text.trim().parse::<u32>() {`n" +
+              "                return Self {i: seed, next_normal: 0.0, next_normal_valid: false};`n" +
+              "            }`n" +
+              "        }`n`n"
+    $rt = $rt.Replace($anchor, $inject)
+    [IO.File]::WriteAllText($rnd, $rt, (New-Object Text.UTF8Encoding $false))
+}
 
 # director.rs 的开发期 A/B 开关（不改算法）：
 #   VEM_BODY=0  关掉琴体共振

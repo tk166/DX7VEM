@@ -1,0 +1,15 @@
+VEM string engine — licensing
+
+The source code in this repository (vem/, scripts/, docs/) is licensed under the
+Apache License, Version 2.0:
+  https://www.apache.org/licenses/LICENSE-2.0
+
+Replace this file with the full Apache-2.0 text before any external distribution.
+
+Third-party notes:
+- vem/reference/ is a clone of Viola Ex Machina (LGPL-2.1), used only for
+  development-time A/B comparison. It is gitignored and must not be shipped.
+- Audio data derived from that project (body IRs, bow noise) is also
+  development-only and is gitignored. See docs/数据与许可.md.
+- web/msfa.wasm and the DX7 assets come from the sibling project
+  ../261115-daw; keep their original license/provenance notes when shipping.

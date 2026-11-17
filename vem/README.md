@@ -143,4 +143,4 @@ void  vem_free_mem(uint8_t* ptr, size_t bytes);
 | M3 琴体 + 总线 | ✅ | 琴体 IR + 弓噪 SNR 125–128 dB；压缩/混响/软限幅可选 |
 | M4 单轨替换 | ✅ | DX7 9 轨 + VEM CH3：电平 +0.05 dB、时移 0 ms、活动一致 0.999 |
 | M5 Web 集成 | ✅ | 双 wasm worklet（DX7 9 轨 + VEM CH3）+ 参数 UI；单声部 CPU 2.80% |
-| M6 收尾 | ⬜ | 体积 / CPU / 许可 |
+| M6 收尾 | ✅ | 87.2 KB / imports 0；单声部 CPU 2.80%；数据与许可见 `docs/数据与许可.md` |

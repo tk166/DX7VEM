@@ -4,7 +4,8 @@
 体积优化放到后期。与现有 DX7 引擎（`../261115-daw`，C++/wasm）并存。
 
 - 开发计划：`docs/开发计划-VEM弦乐引擎.md`
-- 踩坑记录：`docs/VEM踩坑记录.md`
+- 踩坑记录：`docs/VEM踩坑记录.md`（M0–M6 共 30 条）
+- 数据与许可 / 体积 / CPU：`docs/数据与许可.md`
 - 引擎说明 / 命令：`vem/README.md`
 
 ## 目录分工
@@ -41,4 +42,14 @@ node scripts/vem-metrics.mjs out/ref-69.wav out/vem-69.wav --from 0.5 --to 3.5 -
 | M3 琴体 IR + 总线 FX | ✅ |
 | M4 接数据、CH3 单轨替换 | ✅ |
 | M5 Web/AudioWorklet 集成 | ✅ |
-| M6 收尾（体积/CPU/许可） | ⬜ |
+| M6 收尾（体积/CPU/许可） | ✅ |
+
+## 关键数字
+
+| 项 | 结果 |
+|---|---|
+| 还原度（vs 参考，单音/弓法） | 频谱余弦 1.0000、包络 1.0000、逐采样 SNR ≈136 dB |
+| 琴体 + 弓噪（全链路） | SNR 125–128 dB、频段能量差 0.0 dB |
+| 整曲（DX7 9 轨 + VEM CH3） | 电平 +0.05 dB、时移 0 ms、活动一致 0.999、1/3 oct 谱余弦 0.988 |
+| wasm | 87.2 KB、imports 0（预算 120 KB） |
+| 单声部 CPU | 2.80% 实时 @48 kHz（含琴体 + 弓噪） |
