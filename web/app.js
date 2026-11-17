@@ -13,6 +13,10 @@ const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(
 
 let ctx = null, node = null, ready = false, playing = false;
 let duration = 0, cur = 0, seekTarget = null, dragging = false;
+let originalNotes = null;
+let humCfg = null;
+let humanizeApi = null;
+let humTimer = null;
 
 const fx = {
   reverb: { mix: 0.18, size: 0.6, damp: 0.45, width: 1 },
@@ -47,7 +51,7 @@ function setStatus(text, kind = "") {
 async function boot() {
   try {
     setStatus("加载数据…", "busy");
-    const [tracks, mix, patches, notesBuf, vemConfig, defaults, humCfg] = await Promise.all([
+    const [tracks, mix, patches, notesBuf, vemConfig, defaults, humConfigRaw] = await Promise.all([
       fetch("data/tracks.json").then((r) => r.json()),
       fetch("data/mix.json").then((r) => r.json()),
       fetch("data/patches.bin").then((r) => r.arrayBuffer()),
@@ -58,9 +62,27 @@ async function boot() {
     ]);
     let notes = notesBuf;
     let exprs = null;
-    if (humCfg && humCfg.enabled !== false) {
-      const { humanizeBuffer } = await import("./humanize.js");
-      const h = humanizeBuffer(notesBuf, humCfg);
+    originalNotes = notesBuf;
+    humCfg = Object.assign(
+      {
+        enabled: true,
+        seed: 20261117,
+        timingMs: 12,
+        velocity: 6,
+        phraseTempoMs: 22,
+        phraseDynamics: 0.06,
+        pitchCents: 4,
+        bowJitter: 0.05,
+        vibratoJitter: 0.12,
+        pressureJitter: 0.05,
+        attackJitter: 0.1,
+      },
+      humConfigRaw || {}
+    );
+    humanizeApi = await import("./humanize.js");
+    setupHumUI();
+    if (humCfg.enabled !== false) {
+      const h = humanizeApi.humanizeBuffer(notesBuf, humCfg);
       notes = h.buffer;
       exprs = h.exprs;
     }
@@ -344,6 +366,66 @@ el.bypass.addEventListener("change", (e) => {
   if (ready) node.port.postMessage({ type: "bypass", on: bypass });
   setStatus(bypass ? "FX 旁通（干声）" : "FX 开启", "ok");
 });
+
+// ---- 演奏起伏 ----
+function setupHumUI() {
+  const cfg = humCfg;
+  const on = $("humOn");
+  on.checked = cfg.enabled !== false;
+  on.addEventListener("change", (e) => {
+    cfg.enabled = e.target.checked;
+    scheduleHumanize();
+  });
+
+  const slider = (id, key, fmt) => {
+    const el = $(id);
+    const out = $(id + "Val");
+    if (!el) return;
+    el.value = cfg[key];
+    const upd = () => {
+      const v = Number(el.value);
+      cfg[key] = v;
+      if (out) out.textContent = fmt(v);
+      scheduleHumanize();
+    };
+    el.addEventListener("input", upd);
+    if (out) out.textContent = fmt(Number(cfg[key]));
+  };
+  slider("humTime", "timingMs", (v) => `${v} ms`);
+  slider("humVel", "velocity", (v) => v.toFixed(1));
+  slider("humTempo", "phraseTempoMs", (v) => `${v} ms`);
+  slider("humDyn", "phraseDynamics", (v) => `${Math.round(v * 100)}%`);
+  slider("humCents", "pitchCents", (v) => `${v} cent`);
+  slider("humBow", "bowJitter", (v) => v.toFixed(2));
+  slider("humVib", "vibratoJitter", (v) => `${Math.round(v * 100)}%`);
+  slider("humPress", "pressureJitter", (v) => `${Math.round(v * 100)}%`);
+  slider("humAttack", "attackJitter", (v) => `${Math.round(v * 100)}%`);
+
+  const seed = $("humSeed");
+  seed.value = cfg.seed;
+  seed.addEventListener("change", () => {
+    cfg.seed = Number(seed.value) || 20261117;
+    scheduleHumanize();
+  });
+}
+
+function scheduleHumanize() {
+  if (humTimer) clearTimeout(humTimer);
+  humTimer = setTimeout(applyHumanize, 150);
+}
+
+function applyHumanize() {
+  if (!ready || !originalNotes || !humanizeApi) return;
+  let buf = originalNotes;
+  let exprs = null;
+  if (humCfg.enabled !== false) {
+    const h = humanizeApi.humanizeBuffer(originalNotes, humCfg);
+    buf = h.buffer;
+    exprs = h.exprs;
+  }
+  node.port.postMessage({ type: "events", events: buf, exprs });
+  setStatus("演奏起伏已更新", "ok");
+}
 
 setStatus("加载中…", "busy");
 boot();

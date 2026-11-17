@@ -128,8 +128,9 @@ send({ type: "bypass", on: true });
 send({ type: "bypass", on: false });
 send({ type: "vemParam", params: { art: 3, bow: 0.3, vibrato: 0.8, bodyMix: 0.1, bowNoise: 0.2 } });
 send({ type: "fx", fx: { reverb: { mix: 0.3, size: 0.8, damp: 0.2, width: 0.5 }, comp: { on: 0, thr: -24, ratio: 6, atk: 5, rel: 100, makeup: 0 }, chorus: { on: 0, rate: 1, depth: 0.3, mix: 0.5, spread: 90 } } });
+send({ type: "events", events, exprs: null }); // humanize 参数变化 → 事件热替换
 for (let b = 0; b < (0.5 * SR) / FRAMES; b++) { proc.process([], outputs); fakeNow += FRAMES / SR; }
-console.log("参数下发 OK");
+console.log("参数下发 + 事件热替换 OK");
 
 // 暂停
 send({ type: "pause" });

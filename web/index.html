@@ -123,6 +123,30 @@
 
   <div class="card">
     <div class="fx-head">
+      <h2 style="margin:0">演奏起伏（humanize）</h2>
+      <label class="chk"><input type="checkbox" id="humOn" checked /> 开</label>
+    </div>
+    <div class="grid2">
+      <div>
+        <div class="row"><span class="name">时间抖动</span><input type="range" id="humTime" min="0" max="40" step="1" value="12" /><span class="val" id="humTimeVal">12 ms</span></div>
+        <div class="row"><span class="name">力度抖动</span><input type="range" id="humVel" min="0" max="20" step="0.5" value="6" /><span class="val" id="humVelVal">6</span></div>
+        <div class="row"><span class="name">乐句速度</span><input type="range" id="humTempo" min="0" max="50" step="1" value="22" /><span class="val" id="humTempoVal">22 ms</span></div>
+        <div class="row"><span class="name">乐句力度</span><input type="range" id="humDyn" min="0" max="0.2" step="0.01" value="0.06" /><span class="val" id="humDynVal">6%</span></div>
+        <div class="row"><span class="name">音准抖动</span><input type="range" id="humCents" min="0" max="20" step="1" value="4" /><span class="val" id="humCentsVal">4 cent</span></div>
+      </div>
+      <div>
+        <div class="row"><span class="name">弓位抖动</span><input type="range" id="humBow" min="0" max="0.2" step="0.01" value="0.05" /><span class="val" id="humBowVal">0.05</span></div>
+        <div class="row"><span class="name">揉弦抖动</span><input type="range" id="humVib" min="0" max="0.4" step="0.01" value="0.12" /><span class="val" id="humVibVal">12%</span></div>
+        <div class="row"><span class="name">弓压抖动</span><input type="range" id="humPress" min="0" max="0.2" step="0.01" value="0.05" /><span class="val" id="humPressVal">5%</span></div>
+        <div class="row"><span class="name">起音抖动</span><input type="range" id="humAttack" min="0" max="0.4" step="0.01" value="0.1" /><span class="val" id="humAttackVal">10%</span></div>
+        <div class="row"><span class="name">随机种子</span><input type="number" id="humSeed" min="1" max="2147483647" value="20261117" style="background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:5px 8px" /><span class="val"></span></div>
+      </div>
+    </div>
+    <div class="hint">改动即时重算（播放位置保留；当前按住的长音会重新起音）。</div>
+  </div>
+
+  <div class="card">
+    <div class="fx-head">
       <h2 style="margin:0">效果器</h2>
       <label class="chk"><input type="checkbox" id="bypass" /> 旁通 FX（与 REAPER 干声 A/B）</label>
     </div>

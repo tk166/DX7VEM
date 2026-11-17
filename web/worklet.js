@@ -81,6 +81,8 @@ class MsfaProcessor extends AudioWorkletProcessor {
       if (!e) return;
       Object.assign(e.params, msg.params || {});
       this.applyVemEngine(e);
+    } else if (msg.type === "events") {
+      this.replaceSong(msg.events, msg.exprs);
     }
   }
 
@@ -215,12 +217,21 @@ class MsfaProcessor extends AudioWorkletProcessor {
     }
 
     // 事件（兼容 ArrayBuffer / TypedArray）
-    const evBytes = msg.events instanceof ArrayBuffer
-      ? new Uint8Array(msg.events)
-      : new Uint8Array(msg.events.buffer, msg.events.byteOffset || 0, msg.events.byteLength);
+    this.parseSong(msg.events);
+    this.exprs = msg.exprs ? new Float32Array(msg.exprs) : null;
+    this.fx = msg.fx;
+    this.ready = true;
+    this.applyFx();
+    this.port.postMessage({ type: "ready", sampleRate: this.sr, duration: this.duration, events: this.eventCount, vem: !!(this.vemEngines && this.vemEngines.length) });
+  }
+
+  parseSong(events) {
+    const evBytes = events instanceof ArrayBuffer
+      ? new Uint8Array(events)
+      : new Uint8Array(events.buffer, events.byteOffset || 0, events.byteLength);
     const dv = new DataView(evBytes.buffer, evBytes.byteOffset, evBytes.byteLength);
     const n = dv.getUint32(4, true);
-    this.events = new Float64Array(n * 2);      // t, packed(code)
+    this.events = new Float64Array(n * 2);      // t, index
     this.evData = new Uint8Array(n * 4);        // ch,note,vel,on
     const base = 12;
     for (let i = 0; i < n; i++) {
@@ -232,12 +243,35 @@ class MsfaProcessor extends AudioWorkletProcessor {
       this.evData[i * 4 + 2] = dv.getUint8(o + 6);
       this.evData[i * 4 + 3] = dv.getUint8(o + 7);
     }
-    this.evIndex = 0;
-    this.exprs = msg.exprs ? new Float32Array(msg.exprs) : null;
-    this.fx = msg.fx;
-    this.ready = true;
+    this.eventCount = n;
+  }
+
+  /** 替换事件（humanize 参数变化时），保留播放位置，但重置发声状态避免卡音。 */
+  replaceSong(events, exprs) {
+    if (!this.ready) return;
+    this.parseSong(events);
+    this.exprs = exprs ? new Float32Array(exprs) : null;
+    this.E._msfa_mixer_reset(this.mixer);
+    for (let i = 0; i < this.tracks.length; i++) {
+      const ch = this.tracks[i].channel;
+      if (this.vemChannels && this.vemChannels.has(ch)) continue;
+      this.E._msfa_mixer_set_patch(this.mixer, ch, this.patchPtrs[i]);
+      this.E._msfa_mixer_set_gain(this.mixer, ch, this.trackGain[i] ?? this.tracks[i].volume);
+    }
+    if (this.vemEngines) {
+      for (const e of this.vemEngines) {
+        e.E.vem_reset(e.eng);
+        e.E.vem_set_master(e.eng, this.master);
+        e.E.vem_set_gain(e.eng, e.entry.gain ?? 1);
+        this.applyVemEngine(e);
+      }
+    }
     this.applyFx();
-    this.port.postMessage({ type: "ready", sampleRate: this.sr, duration: this.duration, events: n, vem: !!(this.vemEngines && this.vemEngines.length) });
+    const now = this.offset + this.pos / this.sr;
+    let i = 0;
+    while (i < this.events.length / 2 && this.events[i * 2] < now) i++;
+    this.evIndex = i;
+    this.fade = 0;
   }
 
   applyVemEngine(e) {
