@@ -32,4 +32,8 @@ if ($opt -and -not $NoOpt) {
 }
 
 Write-Host "产物: $dst"
+# 网页侧副本（worklet 从 web/ 静态目录 fetch）
+$webDst = Join-Path $root "../web/vem.wasm"
+Copy-Item $dst $webDst -Force
+Write-Host "网页副本: $webDst"
 node (Join-Path $root "../scripts/check-standalone.mjs") $dst

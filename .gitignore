@@ -2,6 +2,8 @@
 /out/
 /vem/target/
 /vem/reference/
-# 参考实现的构建产物不随仓库走
+# VEM dev data (generated from reference FLACs by gen-data; never ship)
+/web/data/vem/
+# reference build artifacts
 **/target/
 *.pdb

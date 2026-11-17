@@ -114,6 +114,28 @@
   </div>
 
   <div class="card">
+    <h2>VEM 弦乐（CH3 独奏）</h2>
+    <div class="row"><span class="name">弓法</span>
+      <select id="vemArt" style="grid-column: span 2; padding:6px; border-radius:8px; background:var(--panel2); color:var(--text); border:1px solid var(--line)">
+        <option value="0">Arco 连弓</option>
+        <option value="1">Marcato 重音</option>
+        <option value="2">Glissando 滑音</option>
+        <option value="3">Spiccato 跳弓</option>
+        <option value="4">Pizzicato 拨弦</option>
+        <option value="5">Col Legno 击弦</option>
+        <option value="6">Tremolo 颤弓</option>
+      </select>
+    </div>
+    <div class="row"><span class="name">弓位</span><input type="range" id="vemBow" min="0" max="1" step="0.01" value="0.5" /><span class="val" id="vemBowVal">0.50</span></div>
+    <div class="row"><span class="name">揉弦深度</span><input type="range" id="vemVib" min="0" max="1.5" step="0.01" value="0.4" /><span class="val" id="vemVibVal">0.40</span></div>
+    <div class="row"><span class="name">揉弦渐入</span><input type="range" id="vemVibOnset" min="0" max="500" step="10" value="120" /><span class="val" id="vemVibOnsetVal">120 ms</span></div>
+    <div class="row"><span class="name">起音</span><input type="range" id="vemAttack" min="2" max="300" step="1" value="8" /><span class="val" id="vemAttackVal">8 ms</span></div>
+    <div class="row"><span class="name">弓噪</span><input type="range" id="vemNoise" min="0" max="1" step="0.01" value="0.5" /><span class="val" id="vemNoiseVal">50%</span></div>
+    <div class="row"><span class="name">琴体共振</span><input type="range" id="vemBody" min="0" max="0.4" step="0.01" value="0.18" /><span class="val" id="vemBodyVal">0.18</span></div>
+    <div class="hint">VEM 只接管 CH3；弓噪/琴体需要 <code>web/data/vem/</code> 下的数据（开发期由 gen-data 生成）。</div>
+  </div>
+
+  <div class="card">
     <div class="fx-head">
       <h2 style="margin:0">效果器</h2>
       <label class="chk"><input type="checkbox" id="bypass" /> 旁通 FX（与 REAPER 干声 A/B）</label>

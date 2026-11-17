@@ -72,6 +72,14 @@ powershell -ExecutionPolicy Bypass -File scripts/vem-m3-accept.ps1
 node scripts/render-mix.mjs out/p03-vem-mix.wav --stems
 node scripts/m4-check.mjs --gate
 
+# M5：worklet 冒烟（双 wasm + seek/参数/暂停）与单声部 CPU
+node scripts/test-worklet.mjs --engine both
+node scripts/vem-cpu.mjs --seconds 60
+
+# 浏览器：node web/serve.cjs → http://127.0.0.1:8082/
+#   CH3 走 VEM；UI 里有弓法/弓位/揉弦/起音/弓噪/琴体
+#   web/data/vem/ 需要 body-violin.bin + noise.bin（gen-data 生成，不入库）
+
 # 参考实现（首次会 clone + 编译）
 powershell -ExecutionPolicy Bypass -File vem/fetch-reference.ps1
 .\vem\reference\target\release\ref-instrument.exe `
@@ -134,5 +142,5 @@ void  vem_free_mem(uint8_t* ptr, size_t bytes);
 | M2 演奏性 | ✅ | 7 种弓法 + 滑音全 PASS：余弦 1.0000、逐采样 SNR ≈136 dB |
 | M3 琴体 + 总线 | ✅ | 琴体 IR + 弓噪 SNR 125–128 dB；压缩/混响/软限幅可选 |
 | M4 单轨替换 | ✅ | DX7 9 轨 + VEM CH3：电平 +0.05 dB、时移 0 ms、活动一致 0.999 |
-| M5 Web 集成 | ⬜ | AudioWorklet 适配层 + UI |
+| M5 Web 集成 | ✅ | 双 wasm worklet（DX7 9 轨 + VEM CH3）+ 参数 UI；单声部 CPU 2.80% |
 | M6 收尾 | ⬜ | 体积 / CPU / 许可 |

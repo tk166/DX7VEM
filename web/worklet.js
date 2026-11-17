@@ -1,8 +1,10 @@
-// AudioWorklet：调度音符 + 调用 msfa wasm（引擎 + DSP）实时渲染
+// AudioWorklet：调度音符 + 调用 msfa wasm（DX7 9 轨）+ vem wasm（CH3 弦乐），实时渲染
 // 与主线程的协议：
-//   in : {type:'init', wasmBinary, patches:ArrayBuffer, tracks, events:ArrayBuffer, master, fx, duration}
+//   in : {type:'init', wasmBinary, patches, tracks, events, master, fx, duration,
+//         vem:{wasmBinary, channel, gain, data:[ArrayBuffer], params}}
 //        {type:'play'} {type:'pause'} {type:'seek', time} {type:'master', value}
 //        {type:'trackGain', index, value} {type:'fx', fx} {type:'bypass', on}
+//        {type:'vemParam', params}
 //   out: {type:'ready'} {type:'pos', time} {type:'level', peak}
 
 const BLOCK = 64;
@@ -21,6 +23,7 @@ class MsfaProcessor extends AudioWorkletProcessor {
     this.trackGain = [];
     this.lastLevelReport = 0;
     this.fade = 0;
+    this.vem = null;
   }
 
   onMessage(msg) {
@@ -34,16 +37,30 @@ class MsfaProcessor extends AudioWorkletProcessor {
     } else if (msg.type === "seek") {
       this.seek(msg.time);
     } else if (msg.type === "master") {
-      if (this.ready) this.E._msfa_mixer_set_master(this.mixer, msg.value);
+      if (!this.ready) return;
+      this.master = msg.value;
+      this.E._msfa_mixer_set_master(this.mixer, msg.value);
+      if (this.vem) this.vem.E.vem_set_master(this.vem.eng, msg.value);
     } else if (msg.type === "trackGain") {
       this.trackGain[msg.index] = msg.value;
-      if (this.ready) this.E._msfa_mixer_set_gain(this.mixer, this.tracks[msg.index].channel, msg.value);
+      if (!this.ready) return;
+      const ch = this.tracks[msg.index].channel;
+      if (this.vem && ch === this.vem.channel) {
+        this.vem.gain = msg.value * this.vemCalibration;
+        this.vem.E.vem_set_gain(this.vem.eng, this.vem.gain);
+      } else {
+        this.E._msfa_mixer_set_gain(this.mixer, ch, msg.value);
+      }
     } else if (msg.type === "fx") {
       this.fx = msg.fx;
       this.applyFx();
     } else if (msg.type === "bypass") {
       this.bypass = msg.on;
       this.applyFx();
+    } else if (msg.type === "vemParam") {
+      if (!this.vem) return;
+      Object.assign(this.vem.params, msg.params || {});
+      this.applyVemParams();
     }
   }
 
@@ -75,16 +92,71 @@ class MsfaProcessor extends AudioWorkletProcessor {
     this.patches = new Uint8Array(msg.patches);
     this.tracks = msg.tracks;
     this.duration = msg.duration;
+    this.master = msg.master;
     this.trackGain = this.tracks.map((t) => t.volume);
+
+    // ---- VEM（CH3 弦乐）----
+    if (msg.vem) {
+      const vraw = (await WebAssembly.instantiate(msg.vem.wasmBinary, {})).instance.exports;
+      const vE = vraw;
+      const eng = vE.vem_new(this.sr, 0);
+      this.vem = {
+        E: vE,
+        eng,
+        channel: msg.vem.channel,
+        gain: msg.vem.gain,
+        calibration: msg.vem.calibration ?? 1,
+        params: Object.assign(
+          {
+            art: 0,
+            bow: 0.5,
+            pressure: 1,
+            vibrato: 0.4,
+            vibratoRate: 5.2,
+            attackMs: 8,
+            attackVelMs: 60,
+            releaseMs: 60,
+            releaseSlowMs: 120,
+            bowSettleMs: 208.33,
+            vibOnsetMs: 120,
+            releaseRate: 0.5,
+            bodyMix: 0.18,
+            bowNoiseOn: 1,
+            bowNoise: 0.5,
+          },
+          msg.vem.params || {}
+        ),
+      };
+      this.vemCalibration = this.vem.calibration;
+      // 数据（琴体 IR / 弓噪）
+      const data = msg.vem.data || [];
+      for (const buf of data) {
+        const bytes = new Uint8Array(buf);
+        if (!bytes.byteLength) continue;
+        const ptr = vE.vem_alloc(bytes.byteLength);
+        new Uint8Array(vE.memory.buffer, ptr, bytes.byteLength).set(bytes);
+        vE.vem_set_patch(eng, ptr, bytes.byteLength);
+        vE.vem_free_mem(ptr, bytes.byteLength);
+      }
+      vE.vem_set_master(eng, this.master);
+      this.applyVemParams();
+      this.vemL = vE.vem_alloc(BLOCK * 4);
+      this.vemR = vE.vem_alloc(BLOCK * 4);
+    }
 
     // 每个通道的音色（malloc 一次，seek 时复用）
     this.patchPtrs = [];
     for (let i = 0; i < this.tracks.length; i++) {
+      const ch = this.tracks[i].channel;
+      if (this.vem && ch === this.vem.channel) {
+        this.patchPtrs.push(0);
+        continue; // CH3 交给 VEM，不再创建 DX7 实例
+      }
       const p = this.E.malloc(156);
       this.patchPtrs.push(p);
       new Uint8Array(this.E.memory.buffer, p, 156).set(this.patches.subarray(i * 156, i * 156 + 156));
-      this.E._msfa_mixer_set_patch(this.mixer, this.tracks[i].channel, p);
-      this.E._msfa_mixer_set_gain(this.mixer, this.tracks[i].channel, this.tracks[i].volume);
+      this.E._msfa_mixer_set_patch(this.mixer, ch, p);
+      this.E._msfa_mixer_set_gain(this.mixer, ch, this.tracks[i].volume);
     }
     this.E._msfa_mixer_set_master(this.mixer, msg.master);
     this.outL = this.E.malloc(BLOCK * 4);
@@ -112,7 +184,30 @@ class MsfaProcessor extends AudioWorkletProcessor {
     this.fx = msg.fx;
     this.ready = true;
     this.applyFx();
-    this.port.postMessage({ type: "ready", sampleRate: this.sr, duration: this.duration, events: n });
+    this.port.postMessage({ type: "ready", sampleRate: this.sr, duration: this.duration, events: n, vem: !!this.vem });
+  }
+
+  applyVemParams() {
+    if (!this.vem) return;
+    const { E, eng, params: p } = this.vem;
+    E.vem_set_articulation(eng, p.art | 0);
+    E.vem_set_bow(eng, p.bow, p.pressure);
+    E.vem_set_vibrato(eng, p.vibrato, p.vibratoRate);
+    E.vem_set_envelope(
+      eng,
+      p.attackMs,
+      p.attackVelMs,
+      p.releaseMs,
+      p.releaseSlowMs,
+      p.bowSettleMs,
+      p.vibOnsetMs,
+      60
+    );
+    E.vem_set_release_rate(eng, p.releaseRate);
+    E.vem_set_body(eng, p.bodyMix, 0.6);
+    E.vem_set_bow_noise(eng, p.bowNoiseOn ? 1 : 0, p.bowNoise);
+    E.vem_set_polyphonic(eng, 0);
+    E.vem_set_gain(eng, this.vem.gain);
   }
 
   // 把 FX 参数下发给 wasm（bypass 时全部旁通）
@@ -123,9 +218,16 @@ class MsfaProcessor extends AudioWorkletProcessor {
     const r = this.fx.reverb, c = this.fx.comp, ch = this.fx.chorus;
     E._msfa_mixer_set_reverb(m, b ? 0 : r.mix, r.size, r.damp, r.width);
     E._msfa_mixer_set_comp(m, b ? 0 : (c.on ? 1 : 0), c.thr, c.ratio, c.atk, c.rel, c.makeup);
-    // 合唱只作用于 CH3（channel 2）
+    if (this.vem) {
+      const v = this.vem;
+      v.E.vem_set_reverb(v.eng, b ? 0 : r.mix, r.size, r.damp, r.width);
+      v.E.vem_set_comp(v.eng, b ? 0 : (c.on ? 1 : 0), c.thr, c.ratio, c.atk, c.rel, c.makeup);
+    }
+    // 合唱只作用于 CH3（若 CH3 走 VEM 则没有合唱）
     for (const t of this.tracks) {
-      if (t.chorus) E._msfa_mixer_set_chorus(m, t.channel, (!b && ch.on) ? 1 : 0, ch.rate, ch.depth, ch.mix, ch.spread);
+      if (t.chorus && !(this.vem && t.channel === this.vem.channel)) {
+        E._msfa_mixer_set_chorus(m, t.channel, (!b && ch.on) ? 1 : 0, ch.rate, ch.depth, ch.mix, ch.spread);
+      }
     }
   }
 
@@ -134,8 +236,15 @@ class MsfaProcessor extends AudioWorkletProcessor {
     this.E._msfa_mixer_reset(this.mixer);
     // reset 会销毁实例，重新下发音色与增益（复用已分配的 patch 指针）
     for (let i = 0; i < this.tracks.length; i++) {
-      this.E._msfa_mixer_set_patch(this.mixer, this.tracks[i].channel, this.patchPtrs[i]);
-      this.E._msfa_mixer_set_gain(this.mixer, this.tracks[i].channel, this.trackGain[i] ?? this.tracks[i].volume);
+      const ch = this.tracks[i].channel;
+      if (this.vem && ch === this.vem.channel) continue;
+      this.E._msfa_mixer_set_patch(this.mixer, ch, this.patchPtrs[i]);
+      this.E._msfa_mixer_set_gain(this.mixer, ch, this.trackGain[i] ?? this.tracks[i].volume);
+    }
+    if (this.vem) {
+      this.vem.E.vem_reset(this.vem.eng);
+      this.vem.E.vem_set_master(this.vem.eng, this.master);
+      this.applyVemParams();
     }
     this.applyFx();
     this.offset = Math.max(0, Math.min(time, this.duration));
@@ -167,19 +276,34 @@ class MsfaProcessor extends AudioWorkletProcessor {
         if (t > nowT) break;
         const d = this.evIndex * 4;
         const ch = this.evData[d], note = this.evData[d + 1], vel = this.evData[d + 2], on = this.evData[d + 3];
-        if (on) this.E._msfa_mixer_note_on(this.mixer, ch, note, vel);
+        if (this.vem && ch === this.vem.channel) {
+          if (on) this.vem.E.vem_note_on(this.vem.eng, note, vel / 127);
+          else this.vem.E.vem_note_off(this.vem.eng, note);
+        } else if (on) this.E._msfa_mixer_note_on(this.mixer, ch, note, vel);
         else this.E._msfa_mixer_note_off(this.mixer, ch, note);
         this.evIndex++;
       }
+
       this.E._msfa_mixer_render(this.mixer, this.outL, this.outR, BLOCK);
       const sl = new Float32Array(this.E.memory.buffer, this.outL, BLOCK);
       const sr = new Float32Array(this.E.memory.buffer, this.outR, BLOCK);
+
+      let vl = null, vr = null;
+      if (this.vem) {
+        const v = this.vem;
+        v.E.vem_render(v.eng, this.vemL, this.vemR, BLOCK);
+        vl = new Float32Array(v.E.memory.buffer, this.vemL, BLOCK);
+        vr = new Float32Array(v.E.memory.buffer, this.vemR, BLOCK);
+      }
+
       const lim = Math.min(BLOCK, frames - base);
       for (let i = 0; i < lim; i++) {
         // 2ms 淡入（seek 后）/ 2ms 淡出（到达结尾）
         if (this.fade < 1) this.fade = Math.min(1, this.fade + 1 / (0.002 * this.sr));
-        L[base + i] = sl[i] * this.fade;
-        R[base + i] = sr[i] * this.fade;
+        const l = sl[i] + (vl ? vl[i] : 0);
+        const r = sr[i] + (vr ? vr[i] : 0);
+        L[base + i] = l * this.fade;
+        R[base + i] = r * this.fade;
       }
     }
     this.pos += frames;

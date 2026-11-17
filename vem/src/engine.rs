@@ -784,7 +784,7 @@ impl Engine {
         } else {
             0.0
         };
-        let body_ready = self.body.is_ready();
+        let body_ready = self.body.is_ready() && self.body_mix != 0.0;
         let body_mix = self.body_mix;
         let fft = &mut self.fft;
         let rng = &mut self.rng;

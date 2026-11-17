@@ -1,4 +1,4 @@
-//! 任意长度的复数 IFFT + 实数 IFFT，带按长度缓存的“计划”。
+﻿//! 任意长度的复数 IFFT + 实数 IFFT，带按长度缓存的“计划”。
 //!
 //! - 长度只含因子 2/3/5 → 递归混合基 Cooley–Tukey（我们的主力路径）；
 //! - 其它长度（含 7/11/… 与大素数）→ Bluestein（chirp-z），内部用基 2 FFT；
@@ -27,6 +27,9 @@ pub struct FftCache {
     /// Bluestein 工作区（长度 m）
     wre: Vec<f32>,
     wim: Vec<f32>,
+    /// 实数 FFT 的打包缓冲（长度 n/2）
+    zre: Vec<f32>,
+    zim: Vec<f32>,
 }
 
 struct Plan {
@@ -41,6 +44,12 @@ enum Kind {
         radices: Vec<usize>,
         tw_re: Vec<f32>,
         tw_im: Vec<f32>,
+    },
+    /// 2 的幂：专用迭代 radix-2（琴体卷积全走这条，比通用递归快得多）
+    Pow2 {
+        tw_re: Vec<f32>,
+        tw_im: Vec<f32>,
+        bitrev: Vec<u32>,
     },
     /// Bluestein：m = next_pow2(2n-1)
     Bluestein(Box<Blue>),
@@ -71,6 +80,8 @@ impl FftCache {
             sim: Vec::new(),
             wre: Vec::new(),
             wim: Vec::new(),
+            zre: Vec::new(),
+            zim: Vec::new(),
         }
     }
 
@@ -80,6 +91,10 @@ impl FftCache {
         debug_assert_eq!(spec_re.len(), n / 2 + 1);
         debug_assert_eq!(spec_im.len(), n / 2 + 1);
         if n == 0 {
+            return;
+        }
+        if n.is_power_of_two() && n >= 16 {
+            self.inverse_real_pow2(spec_re, spec_im, out);
             return;
         }
         let mut buf_re = core::mem::take(&mut self.buf_re);
@@ -126,7 +141,7 @@ impl FftCache {
         self.plans[idx].last_used = self.tick;
 
         let blue = match &self.plans[idx].kind {
-            Kind::Smooth { .. } => None,
+            Kind::Smooth { .. } | Kind::Pow2 { .. } => None,
             Kind::Bluestein(b) => Some(b.m),
         };
 
@@ -139,17 +154,22 @@ impl FftCache {
                 bluestein_run(b, re, im, wre, wim);
             }
         } else {
-            self.sre.resize(n, 0.0);
-            self.sim.resize(n, 0.0);
             let plan = &self.plans[idx];
-            let (sre, sim) = (&mut self.sre[..n], &mut self.sim[..n]);
-            if let Kind::Smooth {
-                radices,
-                tw_re,
-                tw_im,
-            } = &plan.kind
-            {
-                mixed_fft(re, im, 0, n, 1, radices, tw_re, tw_im, n, sre, sim);
+            match &plan.kind {
+                Kind::Pow2 { tw_re, tw_im, bitrev } => {
+                    radix2(re, im, true, tw_re, tw_im, bitrev);
+                }
+                Kind::Smooth {
+                    radices,
+                    tw_re,
+                    tw_im,
+                } => {
+                    self.sre.resize(n, 0.0);
+                    self.sim.resize(n, 0.0);
+                    let (sre, sim) = (&mut self.sre[..n], &mut self.sim[..n]);
+                    mixed_fft(re, im, 0, n, 1, radices, tw_re, tw_im, n, sre, sim);
+                }
+                Kind::Bluestein(_) => unreachable!(),
             }
         }
     }
@@ -169,6 +189,10 @@ impl FftCache {
     pub fn forward_real(&mut self, input: &[f32], spec_re: &mut [f32], spec_im: &mut [f32]) {
         let n = input.len();
         debug_assert_eq!(spec_re.len(), n / 2 + 1);
+        if n.is_power_of_two() && n >= 16 {
+            self.forward_real_pow2(input, spec_re, spec_im);
+            return;
+        }
         let mut re = core::mem::take(&mut self.buf_re);
         let mut im = core::mem::take(&mut self.buf_im);
         re.clear();
@@ -180,6 +204,74 @@ impl FftCache {
         spec_im.copy_from_slice(&im[..n / 2 + 1]);
         self.buf_re = re;
         self.buf_im = im;
+    }
+
+    /// 2 的幂专用：实数 FFT（把 n 点实数打包成 n/2 点复数，再解开）。
+    fn forward_real_pow2(&mut self, input: &[f32], spec_re: &mut [f32], spec_im: &mut [f32]) {
+        let n = input.len();
+        let m = n / 2;
+        let mut zre = core::mem::take(&mut self.zre);
+        let mut zim = core::mem::take(&mut self.zim);
+        zre.resize(m, 0.0);
+        zim.resize(m, 0.0);
+        for k in 0..m {
+            zre[k] = input[2 * k];
+            zim[k] = input[2 * k + 1];
+        }
+        self.dft_forward(&mut zre[..m], &mut zim[..m]);
+        for k in 0..=m {
+            let k2 = k % m;
+            let mk = (m - k) % m;
+            let (ar, ai) = (zre[k2], zim[k2]);
+            let (br, bi) = (zre[mk], -zim[mk]); // conj(Z[m-k])
+            let (er, ei) = (0.5 * (ar + br), 0.5 * (ai + bi));
+            let (dr, di) = (0.5 * (ar - br), 0.5 * (ai - bi));
+            // O = (Z-conj(Z[m-k]))/(2i) = -i·D
+            let (or_, oi) = (di, -dr);
+            let ang = -2.0 * PI * k as f32 / n as f32;
+            let (s, c) = ang.sin_cos();
+            let tr = c * or_ - s * oi;
+            let ti = c * oi + s * or_;
+            spec_re[k] = er + tr;
+            spec_im[k] = ei + ti;
+        }
+        self.zre = zre;
+        self.zim = zim;
+    }
+
+    /// 2 的幂专用：实数 IFFT（未归一化，与 realfft 一致）。
+    fn inverse_real_pow2(&mut self, spec_re: &[f32], spec_im: &[f32], out: &mut [f32]) {
+        let n = out.len();
+        let m = n / 2;
+        let mut zre = core::mem::take(&mut self.zre);
+        let mut zim = core::mem::take(&mut self.zim);
+        zre.resize(m, 0.0);
+        zim.resize(m, 0.0);
+        for k in 0..m {
+            let (x0r, x0i) = (spec_re[k], spec_im[k]);
+            let (x1r, x1i) = (spec_re[m - k], spec_im[m - k]);
+            let er = 0.5 * (x0r + x1r);
+            let ei = 0.5 * (x0i - x1i);
+            let dr = x0r - er;
+            let di = x0i - ei;
+            let ang = -2.0 * PI * k as f32 / n as f32;
+            let (s, c) = ang.sin_cos();
+            // O = D * conj(W^k)
+            let or_ = dr * c + di * s;
+            let oi = -dr * s + di * c;
+            // Z = E + iO
+            zre[k] = er - oi;
+            zim[k] = ei + or_;
+        }
+        self.dft_inplace(&mut zre[..m], &mut zim[..m]);
+        // 与"长度为 n 的未归一化逆变换"保持一致：IFFT_m 给 m·z，这里要 n·x = 2m·z
+        let scale = 2.0f32;
+        for k in 0..m {
+            out[2 * k] = zre[k] * scale;
+            out[2 * k + 1] = zim[k] * scale;
+        }
+        self.zre = zre;
+        self.zim = zim;
     }
 
     fn plan_index(&mut self, n: usize) -> usize {
@@ -212,6 +304,29 @@ impl Default for FftCache {
 
 impl Plan {
     fn new(n: usize) -> Self {
+        if n.is_power_of_two() {
+            let mut bitrev = vec![0u32; n];
+            let bits = n.trailing_zeros();
+            for i in 0..n {
+                bitrev[i] = (i as u32).reverse_bits() >> (32 - bits);
+            }
+            let mut tw_re = Vec::with_capacity(n / 2);
+            let mut tw_im = Vec::with_capacity(n / 2);
+            for t in 0..n / 2 {
+                let a = 2.0 * PI * t as f32 / n as f32;
+                tw_re.push(a.cos());
+                tw_im.push(a.sin());
+            }
+            return Self {
+                n,
+                last_used: 0,
+                kind: Kind::Pow2 {
+                    tw_re,
+                    tw_im,
+                    bitrev,
+                },
+            };
+        }
         let mut radices = Vec::new();
         let mut rest = n;
         for r in [2usize, 3, 5] {
@@ -287,7 +402,7 @@ impl Blue {
         let mut tw_re = Vec::with_capacity(m / 2);
         let mut tw_im = Vec::with_capacity(m / 2);
         for t in 0..m / 2 {
-            let a = -2.0 * PI * t as f32 / m as f32;
+            let a = 2.0 * PI * t as f32 / m as f32;
             tw_re.push(a.cos());
             tw_im.push(a.sin());
         }
@@ -317,34 +432,44 @@ fn radix2(
     bitrev: &[u32],
 ) {
     let n = re.len();
-    for i in 0..n {
-        let j = bitrev[i] as usize;
-        if i < j {
-            re.swap(i, j);
-            im.swap(i, j);
-        }
-    }
-    let sign = if inverse { 1.0f32 } else { -1.0 };
-    let mut len = 2;
-    while len <= n {
-        let half = len / 2;
-        let step = n / len;
-        for base in (0..n).step_by(len) {
-            for k in 0..half {
-                let t = k * step;
-                let wr = tw_re[t];
-                let wi = sign * tw_im[t];
-                let u = base + k;
-                let v = base + k + half;
-                let vr = re[v] * wr - im[v] * wi;
-                let vi = re[v] * wi + im[v] * wr;
-                re[v] = re[u] - vr;
-                im[v] = im[u] - vi;
-                re[u] += vr;
-                im[u] += vi;
+    debug_assert!(im.len() >= n && tw_re.len() >= n / 2 && tw_im.len() >= n / 2 && bitrev.len() >= n);
+    // 音频热路径：索引均已由 plan 保证，去掉边界检查
+    unsafe {
+        let re = re.as_mut_ptr();
+        let im = im.as_mut_ptr();
+        for i in 0..n {
+            let j = *bitrev.get_unchecked(i) as usize;
+            if i < j {
+                core::ptr::swap(re.add(i), re.add(j));
+                core::ptr::swap(im.add(i), im.add(j));
             }
         }
-        len <<= 1;
+        let sign = if inverse { 1.0f32 } else { -1.0 };
+        let mut len = 2;
+        while len <= n {
+            let half = len / 2;
+            let step = n / len;
+            for base in (0..n).step_by(len) {
+                for k in 0..half {
+                    let t = k * step;
+                    let wr = *tw_re.get_unchecked(t);
+                    let wi = sign * *tw_im.get_unchecked(t);
+                    let u = base + k;
+                    let v = base + k + half;
+                    let rv = *re.add(v);
+                    let iv = *im.add(v);
+                    let vr = rv * wr - iv * wi;
+                    let vi = rv * wi + iv * wr;
+                    let ru = *re.add(u);
+                    let iu = *im.add(u);
+                    *re.add(v) = ru - vr;
+                    *im.add(v) = iu - vi;
+                    *re.add(u) = ru + vr;
+                    *im.add(u) = iu + vi;
+                }
+            }
+            len <<= 1;
+        }
     }
 }
 

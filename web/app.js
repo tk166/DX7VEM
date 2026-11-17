@@ -21,6 +21,31 @@ const fx = {
 };
 let bypass = false;
 
+// VEM（CH3 弦乐）参数：默认 = M4 的 melody 预设
+const VEM_CHANNEL = 2;
+const VEM_CALIBRATION = 0.906; // 对齐 DX7 CH3 stem 的 RMS（M4 实测 -0.9 dB）
+const vemParams = {
+  art: 0,
+  bow: 0.5,
+  pressure: 1,
+  vibrato: 0.4,
+  vibratoRate: 5.2,
+  attackMs: 8,
+  attackVelMs: 60,
+  releaseMs: 60,
+  releaseSlowMs: 120,
+  bowSettleMs: 208.33,
+  vibOnsetMs: 120,
+  releaseRate: 0.5,
+  bodyMix: 0.18,
+  bowNoiseOn: 1,
+  bowNoise: 0.5,
+};
+const postVem = (patch) => {
+  Object.assign(vemParams, patch);
+  if (ready) node.port.postMessage({ type: "vemParam", params: patch });
+};
+
 function setStatus(text, kind = "") {
   el.status.textContent = text;
   el.dot.className = "dot" + (kind ? " " + kind : "");
@@ -47,7 +72,14 @@ async function boot() {
     setStatus("加载 worklet…", "busy");
     await ctx.audioWorklet.addModule("worklet.js");
     setStatus("加载 wasm…", "busy");
-    const wasmBinary = await fetch("msfa.wasm").then((r) => r.arrayBuffer());
+    const [wasmBinary, vemBinary, vemBody, vemNoise] = await Promise.all([
+      fetch("msfa.wasm").then((r) => r.arrayBuffer()),
+      fetch("vem.wasm").then((r) => (r.ok ? r.arrayBuffer() : null)),
+      fetch("data/vem/body-violin.bin").then((r) => (r.ok ? r.arrayBuffer() : null)),
+      fetch("data/vem/noise.bin").then((r) => (r.ok ? r.arrayBuffer() : null)),
+    ]);
+    const vemData = [vemBody, vemNoise].filter(Boolean);
+    const vemReady = !!vemBinary;
 
     node = new AudioWorkletNode(ctx, "msfa-processor", {
       numberOfInputs: 0,
@@ -66,7 +98,22 @@ async function boot() {
       master: dbToGain(Number(el.master.value)),
       fx: { ...fx, chorus: { ...fx.chorus } },
       duration,
+      vem: vemReady
+        ? {
+            wasmBinary: vemBinary,
+            channel: VEM_CHANNEL,
+            // 初始增益 = CH3 轨道音量 × 校准
+            gain: (tracks.find((t) => t.channel === VEM_CHANNEL)?.volume ?? 1) * VEM_CALIBRATION,
+            calibration: VEM_CALIBRATION,
+            data: vemData,
+            params: vemParams,
+          }
+        : null,
     });
+    if (vemReady) {
+      el.meta.textContent = `DX7 · msfa(WASM) 9 轨 + VEM 弦乐 CH3${vemData.length ? "（含琴体/弓噪）" : ""} · 立体声`;
+      setStatus(`VEM 数据 ${vemData.length} 个文件`, "busy");
+    }
   } catch (e) {
     console.error(e);
     setStatus("失败：" + e.message, "");
@@ -212,6 +259,15 @@ bind("choDepth", (v) => v.toFixed(2), (v) => { fx.chorus.depth = v; postFx(); })
 bind("choMix", (v) => `${Math.round(v * 100)}%`, (v) => { fx.chorus.mix = v; postFx(); });
 bind("choSpread", (v) => `${v}°`, (v) => { fx.chorus.spread = v; postFx(); });
 $("choOn").addEventListener("change", (e) => { fx.chorus.on = e.target.checked ? 1 : 0; postFx(); });
+
+// ---- VEM（CH3 弦乐）----
+$("vemArt").addEventListener("change", (e) => postVem({ art: Number(e.target.value) }));
+bind("vemBow", (v) => v.toFixed(2), (v) => postVem({ bow: v }));
+bind("vemVib", (v) => v.toFixed(2), (v) => postVem({ vibrato: v }));
+bind("vemVibOnset", (v) => `${v} ms`, (v) => postVem({ vibOnsetMs: v }));
+bind("vemAttack", (v) => `${v} ms`, (v) => postVem({ attackMs: v }));
+bind("vemNoise", (v) => `${Math.round(v * 100)}%`, (v) => postVem({ bowNoise: v, bowNoiseOn: v > 0 ? 1 : 0 }));
+bind("vemBody", (v) => v.toFixed(2), (v) => postVem({ bodyMix: v }));
 
 el.bypass.addEventListener("change", (e) => {
   bypass = e.target.checked;
