@@ -35,6 +35,13 @@ class MsfaProcessor extends AudioWorkletProcessor {
     this.vemAccL = new Float32Array(BLOCK);
     this.vemAccR = new Float32Array(BLOCK);
     this._views = new Map();
+    this.diag = false;
+    this.diagLast = 0;
+    this.diagSamples = 0;
+    this.diagMaxMs = 0;
+    this.diagOver = 0;
+    this.diagCount = 0;
+    this.hasPerfClock = typeof performance !== "undefined" && typeof performance.now === "function";
     // 主动打招呼：Safari 首载时主线程立即 postMessage 可能早于处理器就绪而丢失
     this.port.postMessage({ type: "hello" });
   }
@@ -111,6 +118,7 @@ class MsfaProcessor extends AudioWorkletProcessor {
   }
 
   async initInner(msg) {
+    this.diag = !!msg.diag;
     const imports = { env: { emscripten_notify_memory_growth: () => {} } };
     const { instance } = await WebAssembly.instantiate(msg.wasmBinary, imports);
     // standalone wasm 的导出名没有前导下划线（emscripten 胶水才会加）。
@@ -385,6 +393,7 @@ class MsfaProcessor extends AudioWorkletProcessor {
     if (!this.ready || !out || out.length < 2) return true;
     const L = out[0], R = out[1];
     const frames = L.length;
+    const diagT0 = this.diag && this.hasPerfClock ? performance.now() : 0;
 
     if (!this.playing) {
       // 暂停时输出静音但保持节点存活
@@ -476,7 +485,36 @@ class MsfaProcessor extends AudioWorkletProcessor {
       this.playing = false;
       this.port.postMessage({ type: "ended" });
     }
+    this.recordDiag(diagT0, frames);
     return true;
+  }
+
+  recordDiag(t0, frames) {
+    if (!this.diag) return;
+    this.diagSamples += frames;
+    this.diagCount++;
+    if (t0) {
+      const ms = performance.now() - t0;
+      if (ms > this.diagMaxMs) this.diagMaxMs = ms;
+      if (ms > (frames / this.sr) * 1000) this.diagOver++;
+    }
+    const now = currentTime;
+    if (now - this.diagLast > 1) {
+      const dt = now - this.diagLast;
+      this.port.postMessage({
+        type: "perf",
+        actualSr: this.diagSamples / Math.max(0.001, dt),
+        targetSr: this.sr,
+        maxMs: this.diagMaxMs,
+        over: this.diagOver,
+        count: this.diagCount,
+      });
+      this.diagLast = now;
+      this.diagSamples = 0;
+      this.diagMaxMs = 0;
+      this.diagOver = 0;
+      this.diagCount = 0;
+    }
   }
 }
 

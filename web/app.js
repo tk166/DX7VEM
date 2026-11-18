@@ -11,6 +11,14 @@ const dbToGain = (db) => Math.pow(10, db / 20);
 const gainToDb = (g) => (g <= 1e-6 ? -60 : 20 * Math.log10(g));
 const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
+// 诊断开关：/?test=sine（纯正弦对照）  /?diag=1（正常播放器 + 渲染统计）
+const urlParams = new URLSearchParams(location.search);
+const sineTest = urlParams.get("test") === "sine";
+const diagMode = urlParams.get("diag") === "1";
+let sineNode = null;
+let sineCtx = null;
+let sinePlaying = false;
+
 let ctx = null, node = null, ready = false, playing = false;
 let duration = 0, cur = 0, seekTarget = null, dragging = false;
 let originalNotes = null;
@@ -235,6 +243,7 @@ async function boot() {
         dbToGain(mixDefaults.channelsDb?.[String(t.channel)] ?? gainToDb(t.volume))
       ),
       exprs,
+      diag: diagMode,
       vem: vemReady
         ? {
             wasmBinary: vemBinary,
@@ -291,6 +300,12 @@ function onWorklet(ev) {
   } else if (m.type === "warn") {
     console.warn(m.message);
     setStatus("提示：" + m.message, "");
+  } else if (m.type === "perf") {
+    const box = $("diagStat");
+    if (box) {
+      box.textContent = `诊断: 实际 ${m.actualSr.toFixed(0)}/s (目标 ${m.targetSr}) · 单块 max ${m.maxMs.toFixed(2)}ms · 超时 ${m.over}/${m.count}`;
+      box.style.color = m.actualSr < m.targetSr * 0.98 || m.over > 0 ? "#ff8080" : "";
+    }
   } else if (m.type === "pos") {
     if (!dragging) cur = m.time;
     el.fill.style.width = `${Math.min(100, (cur / duration) * 100)}%`;
@@ -431,6 +446,17 @@ window.addEventListener("pageshow", (e) => {
 
 // ---- 传输控制 ----
 async function togglePlay() {
+  if (sineTest) {
+    if (!sineNode) return;
+    if (sineCtx.state !== "running") {
+      try { await sineCtx.resume(); } catch (e) { console.warn(e); }
+    }
+    sinePlaying = !sinePlaying;
+    sineNode.port.postMessage(sinePlaying ? "play" : "pause");
+    el.play.textContent = sinePlaying ? "❚❚" : "▶";
+    setStatus(sinePlaying ? "正弦测试中" : "已暂停", "ok");
+    return;
+  }
   if (!ready) {
     wantPlay = true;
     setStatus("还在加载音频…加载完成后会自动开始", "busy");
@@ -602,10 +628,50 @@ function applyHumanize() {
   setStatus("演奏起伏已更新", "ok");
 }
 
+// ---- 最小对照：原生 AudioWorklet 正弦，不碰 wasm/素材 ----
+async function startSineTest() {
+  try {
+    const ctx = new AudioContext({ latencyHint: "playback" });
+    await ctx.audioWorklet.addModule("sine-worklet.js");
+    const node = new AudioWorkletNode(ctx, "sine-processor", {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    });
+    node.connect(ctx.destination);
+    sineCtx = ctx;
+    sineNode = node;
+    node.port.onmessage = (e) => {
+      if (e.data.type !== "tick") return;
+      const m = e.data;
+      const bad = m.actualSr < m.targetSr * 0.98;
+      el.meta.textContent = `正弦对照: ${m.actualSr.toFixed(0)}/s (目标 ${m.targetSr}) · quantum ${m.quantum}`;
+      setStatus(bad ? "检测到丢帧" : "正常", bad ? "" : "ok");
+    };
+    el.play.disabled = false;
+    el.play.textContent = "▶";
+    el.meta.textContent = "正弦对照测试（不加载 wasm / 素材）";
+    setStatus("点播放开始", "ok");
+  } catch (e) {
+    setStatus("测试失败：" + e.message, "");
+  }
+}
+
 // ---- 默认值按钮 ----
 $("saveDefaults")?.addEventListener("click", saveDefaults);
 $("exportDefaults")?.addEventListener("click", exportDefaults);
 $("resetDefaults")?.addEventListener("click", resetDefaults);
 
-setStatus("加载中…", "busy");
-boot();
+if (sineTest) {
+  startSineTest();
+} else {
+  if (diagMode && !$("diagStat")) {
+    const d = document.createElement("div");
+    d.className = "hint";
+    d.id = "diagStat";
+    d.textContent = "诊断：等待数据…";
+    el.master.closest(".card")?.appendChild(d);
+  }
+  setStatus("加载中…", "busy");
+  boot();
+}
