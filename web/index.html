@@ -77,6 +77,8 @@
   .fx-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
   .fx-head .t { display: flex; align-items: center; gap: 8px; }
   .badge { font-size: 11px; color: var(--dim); border: 1px solid var(--line); border-radius: 20px; padding: 1px 8px; }
+  .mode-badge.sp { color: var(--warn); border-color: var(--warn); }
+  .mode-badge.aw { color: var(--accent2); border-color: var(--accent2); }
   label.chk { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--dim); font-size: 12px; user-select: none; }
   label.chk input { accent-color: var(--accent); }
 
@@ -94,6 +96,7 @@
   <header>
     <h1>Butterfly Lovers</h1>
     <span class="sub" id="meta">DX7 · msfa(WASM) · 立体声</span>
+    <span class="badge mode-badge" id="modeBadge"></span>
     <span style="flex:1"></span>
     <span class="status"><span class="dot" id="dot"></span><span id="status">加载中…</span></span>
   </header>

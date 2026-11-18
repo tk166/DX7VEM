@@ -574,7 +574,12 @@ UI 顶部新增三个按钮：
 |---|---|
 | `.../?test=sine` | 最小对照：只跑原生 AudioWorklet 正弦（**不加载 wasm / 素材 / FX**），统计实际 `calls/s`，期望 ≈ `sr/128` |
 | `.../?diag=1` | 正常播放器照常工作，状态栏额外显示“实际采样率 / 单块耗时 max / 超时次数” |
-| `.../?sp=1` | ScriptProcessorNode(4096) 兼容路径：同样调 wasm 渲染，但输出缓冲约 93 ms，扛 Firefox 输出管线 stall |
+| `.../?sp=1` / `.../?sp=0` | 强制 / 禁用 SP 路径。**默认按 UA 自动判断**：Firefox → SP，其它浏览器（含 Chrome）→ AudioWorklet |
+
+**自动选择（当前行为）**：`?sp` 不传时，UA 含 `Firefox` 即自动启用 SP(4096)；
+Chrome 下 SP 反而卡，所以**绝不在 Chrome 上自动启用**。
+`?diag=1` 诊断模式强制 worklet（需要它上报数字）；`?sp=0` 可在 Firefox 上强制回 worklet。
+页面顶部有输出路径徽标：`SP 兼容模式（Firefox）`（橙）/ `AudioWorklet`（绿），一眼可见。
 
 判读：
 

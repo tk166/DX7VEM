@@ -15,7 +15,25 @@ const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(
 const urlParams = new URLSearchParams(location.search);
 const sineTest = urlParams.get("test") === "sine";
 const diagMode = urlParams.get("diag") === "1";
-const useSP = urlParams.get("sp") === "1"; // Firefox Android 兼容路径
+// 输出路径选择：
+//   Firefox（尤其 Android）的 AudioWorklet 会间歇 stall → 默认走 SP(4096) 兼容路径
+//   Chrome 下 SP 反而卡 → 只在 Firefox 自动启用；诊断模式需要 worklet 上报，故强制 worklet
+//   ?sp=1 强制 SP，?sp=0 强制 worklet（均可覆盖自动判断）
+const isFirefoxUA = /firefox/i.test(navigator.userAgent || "");
+const spParam = urlParams.get("sp");
+const useSP = spParam === "1" || (spParam !== "0" && isFirefoxUA && !diagMode);
+
+// 顶部显示当前输出路径，方便一眼看出是否落在 SP 兼容模式
+{
+  const badge = $("modeBadge");
+  if (badge && !sineTest) {
+    badge.textContent = useSP ? "SP 兼容模式（Firefox）" : "AudioWorklet";
+    badge.className = "badge mode-badge " + (useSP ? "sp" : "aw");
+    badge.title = useSP
+      ? "ScriptProcessor(4096) · Firefox 兼容路径"
+      : "原生 AudioWorklet";
+  }
+}
 let sp = null;
 let sineNode = null;
 let sineCtx = null;
