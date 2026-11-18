@@ -15,6 +15,8 @@ const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(
 const urlParams = new URLSearchParams(location.search);
 const sineTest = urlParams.get("test") === "sine";
 const diagMode = urlParams.get("diag") === "1";
+const useSP = urlParams.get("sp") === "1"; // Firefox Android 兼容路径
+let sp = null;
 let sineNode = null;
 let sineCtx = null;
 let sinePlaying = false;
@@ -47,7 +49,7 @@ let mixDefaults = { masterDb: -3, channelsDb: {} };
 const postVemTrack = (index, params) => {
   const entry = vemTracks[index];
   if (entry) Object.assign(entry.params, params);
-  if (ready) node.port.postMessage({ type: "vemTrack", index, params });
+  send({ type: "vemTrack", index, params });
 };
 const ART_OPTIONS = [
   "Arco 连弓",
@@ -148,6 +150,15 @@ function setStatus(text, kind = "") {
   el.dot.className = "dot" + (kind ? " " + kind : "");
 }
 
+/// 统一命令入口：worklet 走 postMessage，SP 模式直接调用本地引擎
+function send(cmd) {
+  if (useSP) {
+    if (sp) sp.handle(cmd);
+  } else if (ready && node) {
+    node.port.postMessage(cmd);
+  }
+}
+
 async function boot() {
   try {
     setStatus("加载数据…", "busy");
@@ -202,8 +213,10 @@ async function boot() {
     setStatus("启动音频…", "busy");
     ctx = new AudioContext({ latencyHint: "playback" });
     ctx.onstatechange = onAudioState;
-    setStatus("加载 worklet…", "busy");
-    await ctx.audioWorklet.addModule("worklet.js");
+    if (!useSP) {
+      setStatus("加载 worklet…", "busy");
+      await ctx.audioWorklet.addModule("worklet.js");
+    }
     setStatus("加载 wasm…", "busy");
     const instruments = [...new Set(vemTracks.map((t) => t.instrument))];
     const [wasmBinary, vemBinary, noiseBuf, ...bodies] = await Promise.all([
@@ -220,13 +233,6 @@ async function boot() {
       (noiseBuf ? 1 : 0) + Object.values(bodyByInst).filter(Boolean).length;
     const vemReady = !!vemBinary && vemTracks.length > 0;
 
-    node = new AudioWorkletNode(ctx, "msfa-processor", {
-      numberOfInputs: 0,
-      numberOfOutputs: 1,
-      outputChannelCount: [2],
-    });
-    node.connect(ctx.destination);
-    node.port.onmessage = onWorklet;
     el.play.disabled = true;
     setStatus("音频初始化…", "busy");
 
@@ -254,6 +260,18 @@ async function boot() {
           }
         : null,
     };
+    if (useSP) {
+      // Firefox Android 兼容路径：ScriptProcessorNode（4096 缓冲）
+      await setupSPMode(initMsg);
+      return;
+    }
+    node = new AudioWorkletNode(ctx, "msfa-processor", {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    });
+    node.connect(ctx.destination);
+    node.port.onmessage = onWorklet;
     // Safari：等 worklet 主动 "hello" 后再发 init；同时留一个兜底定时器
     sendInit = () => {
       if (initSent || !node || !initMsg) return;
@@ -347,7 +365,7 @@ function buildTrackUI(tracks) {
     input.addEventListener("input", () => {
       const v = Number(input.value);
       val.textContent = `${v.toFixed(1)} dB`;
-      if (ready) node.port.postMessage({ type: "trackGain", index: i, value: dbToGain(v) });
+      send({ type: "trackGain", index: i, value: dbToGain(v) });
     });
     el.tracks.appendChild(row);
   });
@@ -406,7 +424,7 @@ function buildVemUI() {
 }
 
 function postFx() {
-  if (ready) node.port.postMessage({ type: "fx", fx });
+  send({ type: "fx", fx });
 }
 
 // iOS/Safari：切后台、来电等会让 AudioContext 进入 suspended/interrupted；
@@ -423,7 +441,7 @@ function onAudioState() {
     if (playing) setStatus("播放中", "ok");
   } else if (playing) {
     setPlayingUI(false);
-    if (node) node.port.postMessage({ type: "pause" });
+    send({ type: "pause" });
     setStatus("音频被系统暂停：点播放继续", "");
   }
 }
@@ -479,18 +497,18 @@ async function togglePlay() {
       seek(0);
     }
     setPlayingUI(true);
-    node.port.postMessage({ type: "play" });
+    send({ type: "play" });
     setStatus("播放中", "ok");
   } else {
     setPlayingUI(false);
-    node.port.postMessage({ type: "pause" });
+    send({ type: "pause" });
     setStatus("暂停", "ok");
   }
 }
 
 function seek(t) {
   cur = Math.max(0, Math.min(t, duration));
-  if (ready) node.port.postMessage({ type: "seek", time: cur });
+  send({ type: "seek", time: cur });
   el.fill.style.width = `${(cur / duration) * 100}%`;
   el.knob.style.left = `${(cur / duration) * 100}%`;
   el.tcur.textContent = fmt(cur);
@@ -538,7 +556,7 @@ function bind(id, fmtVal, onChange) {
 el.master.addEventListener("input", () => {
   const db = Number(el.master.value);
   el.masterVal.textContent = `${db.toFixed(1)} dB`;
-  if (ready) node.port.postMessage({ type: "master", value: dbToGain(db) });
+  send({ type: "master", value: dbToGain(db) });
 });
 
 bind("revMix", (v) => `${Math.round(v * 100)}%`, (v) => { fx.reverb.mix = v; postFx(); });
@@ -564,7 +582,7 @@ $("choOn").addEventListener("change", (e) => { fx.chorus.on = e.target.checked ?
 
 el.bypass.addEventListener("change", (e) => {
   bypass = e.target.checked;
-  if (ready) node.port.postMessage({ type: "bypass", on: bypass });
+  send({ type: "bypass", on: bypass });
   setStatus(bypass ? "FX 旁通（干声）" : "FX 开启", "ok");
 });
 
@@ -624,7 +642,7 @@ function applyHumanize() {
     buf = h.buffer;
     exprs = h.exprs;
   }
-  node.port.postMessage({ type: "events", events: buf, exprs });
+  send({ type: "events", events: buf, exprs });
   setStatus("演奏起伏已更新", "ok");
 }
 

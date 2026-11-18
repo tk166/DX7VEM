@@ -574,14 +574,37 @@ UI 顶部新增三个按钮：
 |---|---|
 | `.../?test=sine` | 最小对照：只跑原生 AudioWorklet 正弦（**不加载 wasm / 素材 / FX**），统计实际 `calls/s`，期望 ≈ `sr/128` |
 | `.../?diag=1` | 正常播放器照常工作，状态栏额外显示“实际采样率 / 单块耗时 max / 超时次数” |
+| `.../?sp=1` | ScriptProcessorNode(4096) 兼容路径：同样调 wasm 渲染，但输出缓冲约 93 ms，扛 Firefox 输出管线 stall |
 
 判读：
 
-- `?test=sine` 也卡 → 浏览器自身限制；只能在 Firefox Android 上换 `ScriptProcessorNode`（大缓冲 4096）路径
+- `?test=sine` 也卡 → 浏览器自身限制；换 `?sp=1` 验证大缓冲能否扛住
 - `?test=sine` 正常、但 `?diag=1` 的 `actualSr < targetSr` 或 `over > 0` → 我们的渲染触发 deadline miss，按数字优化热点
 - 两者都正常 → 卡顿来自外层（录音/系统音频策略），与页面无关
 
 诊断只上报数字，**不改变声音**；正常 URL 没有任何额外开销。
+
+**实测反馈（Firefox 160.0.1 / Android 14 / 天玑 700）**：`?test=sine` 正常；
+`?diag=1` 零超时、但录音里仍有约 2 s 近静音突发，且出现在**没有 VEM 的 DX7 独奏段**。
+→ 确认是 Firefox 音频输出管线间歇 stall，不是 DSP 超时。故加 `?sp=1`。
+
+### `?sp=1` 兼容路径实现要点
+
+新增 `web/sp-mode.js`，`app.js` 通过统一 `send(cmd)` 路由（SP 直接调本地引擎、默认仍走 worklet postMessage），
+`index.html` 在 `app.js` 前引入。**只在该 URL 下生效，其它浏览器/默认路径零影响。**
+
+对齐 worklet 的几个坑（都是真实修出来的）：
+
+1. `softClip` 定义在 `worklet.js`，主线程作用域没有 → 在 `sp-mode.js` 里复制一份，否则首个 block 就抛异常；
+2. 立体声：MSFA / VEM 都要分别累计左、右声道（`vsumL/vsumR`），不能只取左声道合成单声道；
+3. `msg.gains` 按**轨道下标**索引，不是 MIDI channel（VEM 轨要先 `findIndex` 找下标）；
+4. `trackGains[]` 要在推子 change 时更新，seek 后 reset 才能恢复当前值；
+5. VEM `params` 必须合并 worklet 的 `defaults`，否则缺字段时下发 `undefined`；
+6. `fx` 的合唱要按 `t.chorus && !vemChannels.has(ch)` 逐轨下发，bypass 时关掉；
+7. 挂一个静音振荡器到 SP 输入，保证某些实现稳定 pull `onaudioprocess`。
+
+验证：无头 Chromium 的 AudioContext 恒为 suspended、原生 SP 回调 0 次，无法听声；
+但通过 `_node` 钩子手动触发 `onaudioprocess` 12×4096 帧，全路径无异常、双声道有真实差异。
 
 
 ## 43. 【线上事故】刷新后第一次按播放没声音，拖一下进度条才行
